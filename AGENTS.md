@@ -6,7 +6,7 @@ Guidance for coding agents working in this repository.
 
 ksef2printer prints KSeF (Polish National e-Invoice System) invoices for a given month on a local printer, from a Docker container. The product spec is `docs/SPEC.md`; the original intent is `docs/intent/ksef2printer.md`. Read the spec before changing behaviour, and update it in the same change when behaviour changes.
 
-Current state: printer layer done (setup, discovery, printing). KSeF client, PDF rendering and the monthly run are not built yet — see "Delivery order" in the spec.
+Current state: works end to end on the KSeF test environment (fetch → render → print → state → ntfy). Not yet run against production.
 
 ## Commands
 
@@ -29,6 +29,12 @@ Run `pnpm lint && pnpm test` before every commit.
 | `src/printer/cups.ts` | Submit jobs with `lp`, poll job state with `ipptool` against the in-container `cupsd` |
 | `src/printer/discover.ts` | mDNS browse for `_ipp`, `_ipps`, `_pdl-datastream` printers (no Avahi daemon) |
 | `src/printer/suggest.ts` | Pure logic: discovered printer + `lpinfo -m` → `PRINTER_URI`/`PRINTER_MODEL` |
+| `src/run.ts` | Monthly run: query, order, limit, download, render, print with retries, state, notifications, retention |
+| `src/ksef/client.ts` | KSeF API 2.0: token auth, metadata query (paging/truncation), XML download, 429/5xx retry |
+| `src/ksef/qr.ts`, `src/ksef/time.ts` | KOD I verification link; Europe/Warsaw month bounds |
+| `src/pdf/render.ts` | Loads the vendored ksef-pdf-generator build and renders XML → PDF |
+| `src/state.ts`, `src/notify.ts` | Atomic per-month state file; ntfy publisher (never fails the run) |
+| `scripts/seed-test-invoices.ts` | Issues fictitious invoices on the KSeF **test** environment |
 | `src/exec.ts` | `run()` wrapper over `execFile`; inject a fake `Run` in tests |
 | `docker/entrypoint.sh` | Starts `cupsd`, creates the `ksef` queue from `PRINTER_*` env, execs the CLI |
 | `docker/job-state.test` | ipptool request used by `cups.ts` |
@@ -41,4 +47,6 @@ Run `pnpm lint && pnpm test` before every commit.
 - **Keep shell-outs injectable.** New external commands go through `Run` so they can be tested without CUPS.
 - **No secrets or personal data in the repo.** `.env` and `config/` are git-ignored; examples use `192.168.1.x` addresses and made-up hostnames. KSeF tokens, NIPs and invoice contents never go in fixtures, logs or commits.
 - **Style:** TypeScript strict mode with `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess`; ESM with `.js` import suffixes; zod for env parsing; no new runtime dependencies without a reason.
+- **KSeF environments.** Develop against `KSEF_ENV=test` with random NIPs and fictitious data. Never run seed or write operations against `prod` or `demo`.
+- The API contract is the official `open-api.json` in [CIRFMF/ksef-docs](https://github.com/CIRFMF/ksef-docs); check request/response shapes there, not from memory.
 - Exit codes: `0` ok, `1` some printing failed, `2` configuration error.

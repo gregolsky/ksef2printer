@@ -7,6 +7,7 @@ Print every KSeF invoice for a given month on a local printer with one command. 
 ```
 ./print.sh 2026-10            # fetch, render and print every invoice issued in Oct 2026
 ./print.sh 2026-10 --dry-run  # list what would print, print nothing
+./print.sh 2026-10 --limit 1  # print at most one invoice this run
 ./print.sh setup             # scan the network (mDNS), pick a printer, write config/printer.env
 ./print.sh discover          # list printers with suggested settings
 ./print.sh test-page         # print a CUPS test page
@@ -26,6 +27,7 @@ Exit codes: `0` everything printed (or nothing to do), `1` some documents failed
 | `PRINTER_URI` | yes | CUPS device URI, e.g. `ipp://printer.local/ipp/print`, `socket://192.168.1.50:9100` |
 | `PRINTER_MODEL` | no | `everywhere` (default, driverless IPP), a model from `drivers`, or `/config/printer.ppd` |
 | `PRINTER_OPTIONS` | no | Space-separated CUPS options, e.g. `PageSize=A4 sides=two-sided-long-edge` |
+| `RETRY_DELAYS_SECONDS` | no | Waits between print attempts (default `10,30,90`) |
 | `PRINT_TIMEOUT_SECONDS` | no | Max wait for one job to finish (default `300`) |
 | `NTFY_URL` | no | ntfy server, e.g. `https://ntfy.sh`; notifications off when unset |
 | `NTFY_TOPIC` | with `NTFY_URL` | ntfy topic |
@@ -56,7 +58,7 @@ Reference setup (Brother HL-1210W, host-based printer with no usable IPP):
 2. Query invoice metadata for the month by **issue date**, both as buyer (`ZAKUP`) and seller (`SPRZEDAŻ`), paging until done.
 3. Skip invoices whose state is `printed`.
 4. Download the XML to `data/invoices/YYYY-MM/<ksefNumber>.xml` and render a PDF next to it with [CIRFMF/ksef-pdf-generator](https://github.com/CIRFMF/ksef-pdf-generator).
-5. Print in issue-date order, purchases first, one job per invoice.
+5. Print in issue-date order, purchases first, one job per invoice. `--limit N` prints at most N invoices this run; the rest stay for the next run.
 6. Notify through ntfy after each document and once at the end.
 
 ## State
@@ -71,7 +73,7 @@ Reference setup (Brother HL-1210W, host-based printer with no usable IPP):
 
 ## Retry
 
-Up to 3 attempts per document, with 10 s, 30 s and 90 s waits between them. Retries happen on a submit error, a job that ends `aborted`, `canceled` or `stopped`, or a timeout. A `stopped` queue is re-enabled (`cupsenable`) before the next attempt. A document still failing after 3 attempts is marked `failed` and the run moves on.
+Up to 4 attempts per document (the first plus one per `RETRY_DELAYS_SECONDS` entry), with 10 s, 30 s and 90 s waits between them. Retries happen on a submit error, a job that ends `aborted`, `canceled` or `stopped`, or a timeout. A `stopped` queue is re-enabled (`cupsenable`) before the next attempt. A document still failing after 3 attempts is marked `failed` and the run moves on.
 
 ## Notifications (ntfy)
 

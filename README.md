@@ -2,7 +2,7 @@
 
 Prints KSeF invoices on your own printer, from a Docker container. It works with any printer CUPS can drive: driverless (IPP Everywhere / AirPrint) printers out of the box, and older printers that need a driver.
 
-> Status: printer setup and printing work. Fetching invoices from KSeF and the monthly run are next (see [docs/SPEC.md](docs/SPEC.md)).
+> Status: works end to end against the KSeF **test** environment. Production use is next.
 
 ## Requirements
 
@@ -17,6 +17,25 @@ cp .env.example .env
 ./print.sh setup       # finds printers on the network, you pick one
 ./print.sh test-page   # prints a CUPS test page
 ```
+
+Then add your KSeF token to `.env` (generate it in the KSeF taxpayer app with only the **InvoiceRead** permission):
+
+```sh
+KSEF_TOKEN=...
+KSEF_NIP=1234567890
+```
+
+## Printing a month
+
+```sh
+./print.sh 2026-10 --dry-run   # list the month's invoices and what would print
+./print.sh 2026-10 --limit 1   # print just the first one, to check
+./print.sh 2026-10             # print the rest
+```
+
+Purchases print first, then sales, each oldest first. Every printed invoice is remembered in `data/state/`, so running the same month again only prints what is missing. A failed print is retried 3 times. Invoice XML and PDFs are kept in `data/invoices/` for a year, then deleted.
+
+Set `NTFY_URL` and `NTFY_TOPIC` in `.env` to get an [ntfy](https://ntfy.sh) notification for every printed or failed invoice and a summary at the end.
 
 `setup` saves the printer settings to `config/printer.env`, for example:
 
@@ -38,6 +57,7 @@ To add duplex or other options, edit `PRINTER_OPTIONS` (space-separated CUPS opt
 
 | Command | What it does |
 |---|---|
+| `./print.sh YYYY-MM [--limit N] [--dry-run]` | Print the month's KSeF invoices |
 | `./print.sh setup [n]` | Scan the network, pick printer `n`, save its settings |
 | `./print.sh discover` | List printers with suggested settings, save nothing |
 | `./print.sh test-page` | Print a test page on the configured printer |
@@ -60,10 +80,19 @@ To add duplex or other options, edit `PRINTER_OPTIONS` (space-separated CUPS opt
 pnpm install
 pnpm lint && pnpm test
 pnpm build
+./scripts/build-pdf-renderer.sh   # vendor/ksef-pdf.js, needed to render PDFs outside Docker
+```
+
+### Trying it on the KSeF test environment
+
+The test environment (`KSEF_ENV=test`) is shared by everyone, so use a random NIP and no real data. Get a test KSeF token with `InvoiceRead` and `InvoiceWrite` (for example with the official [CertTestApp](https://github.com/CIRFMF/ksef-docs/blob/main/auth/testowe-certyfikaty-i-podpisy-xades.md) plus `POST /tokens`), then issue a few fictitious invoices:
+
+```sh
+KSEF_NIP=... KSEF_TOKEN=... pnpm tsx scripts/seed-test-invoices.ts 3
 ```
 
 See [AGENTS.md](AGENTS.md) for the code layout and conventions, and [docs/SPEC.md](docs/SPEC.md) for the full design.
 
 ## License
 
-MIT
+MIT. Invoice PDFs are rendered with [CIRFMF/ksef-pdf-generator](https://github.com/CIRFMF/ksef-pdf-generator) (MIT), built into the image.

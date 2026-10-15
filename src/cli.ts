@@ -1,14 +1,21 @@
 import { access, mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname } from 'node:path'
 import { createInterface } from 'node:readline/promises'
-import { loadPrinterConfig } from './config.js'
+import { loadPrinterConfig, loadRunConfig } from './config.js'
 import { run } from './exec.js'
+import { KsefClient } from './ksef/client.js'
+import { parseMonth } from './ksef/time.js'
 import { consoleLogger as log } from './logger.js'
+import { noopNotifier, ntfyNotifier } from './notify.js'
+import { renderInvoicePdf } from './pdf/render.js'
 import { CupsPrinter, PrintError } from './printer/cups.js'
 import { browsePrinters, type FoundPrinter } from './printer/discover.js'
 import { parseModels, suggestSettings, toEnv, type PrinterSettings } from './printer/suggest.js'
+import { runMonth } from './run.js'
 
 const USAGE = `Usage:
+  ksef2printer YYYY-MM [--limit N] [--dry-run]
+                                  print the month's KSeF invoices (purchases, then sales)
   ksef2printer setup [n]          find printers on the network and save settings for one
   ksef2printer discover           list printers on the network with suggested settings
   ksef2printer test-page          print a CUPS test page on the configured printer
@@ -128,6 +135,67 @@ async function setup(arg: string | undefined): Promise<number> {
   return EXIT_OK
 }
 
+async function printMonth(args: readonly string[]): Promise<number> {
+  const month = parseMonth(args[0] ?? '')
+  if (month == null) {
+    log.error('month must be YYYY-MM')
+    return EXIT_CONFIG
+  }
+  let limit: number | undefined
+  let dryRun = false
+  for (let i = 1; i < args.length; i++) {
+    const a = args[i]!
+    if (a === '--dry-run') dryRun = true
+    else if (a === '--limit' || a.startsWith('--limit=')) {
+      const v = a.includes('=') ? a.slice('--limit='.length) : args[++i]
+      limit = Number(v)
+      if (!Number.isInteger(limit) || limit < 1) {
+        log.error('--limit needs a positive whole number')
+        return EXIT_CONFIG
+      }
+    } else {
+      log.error(`unknown option: ${a}`)
+      return EXIT_CONFIG
+    }
+  }
+
+  const cfg = loadRunConfig()
+  const printerCfg = loadPrinterConfig()
+  const ksef = new KsefClient({ ...cfg.ksef, logger: log })
+  const printer = new CupsPrinter({
+    queue: printerCfg.queue,
+    options: printerCfg.options,
+    jobStateTest: printerCfg.jobStateTest,
+    logger: log,
+  })
+  try {
+    const summary = await runMonth(
+      {
+        month,
+        env: cfg.ksef.env,
+        dataDir: cfg.dataDir,
+        ...(limit != null ? { limit } : {}),
+        dryRun,
+        printTimeoutMs: printerCfg.timeoutMs,
+        retryDelaysMs: cfg.retryDelaysMs,
+      },
+      {
+        ksef,
+        render: (xml, ksefNumber, qr) => renderInvoicePdf(cfg.pdfRenderer, xml, ksefNumber, qr),
+        printer,
+        notifier: cfg.ntfy != null ? ntfyNotifier(cfg.ntfy, log) : noopNotifier,
+        logger: log,
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        now: () => new Date(),
+      },
+    )
+    return summary.failed > 0 ? EXIT_FAILED : EXIT_OK
+  } catch (err) {
+    log.error(err instanceof Error ? err.message : String(err))
+    return EXIT_CONFIG
+  }
+}
+
 async function drivers(query: string | undefined): Promise<number> {
   const res = await run('lpinfo', ['-m'])
   if (res.code !== 0) {
@@ -144,6 +212,7 @@ async function drivers(query: string | undefined): Promise<number> {
 
 export async function main(argv: readonly string[]): Promise<number> {
   const [cmd, arg] = argv
+  if (cmd != null && /^\d{4}-\d{2}$/.test(cmd)) return printMonth(argv)
   switch (cmd) {
     case 'print-pdf':
       return printPdf(arg)

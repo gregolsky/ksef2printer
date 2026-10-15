@@ -10,6 +10,18 @@ COPY src ./src
 RUN pnpm build
 
 # ──────────────────────────────────────────────
+# Invoice PDF rendering: CIRFMF/ksef-pdf-generator (MIT), the Ministry of Finance's visualisation
+# library, built from a pinned commit.
+FROM node:22-trixie-slim AS pdf-renderer
+
+ARG KSEF_PDF_GENERATOR_COMMIT=8a18843db12d0013a417500bb2f98bfe49b7d2a8
+ADD https://github.com/CIRFMF/ksef-pdf-generator/archive/${KSEF_PDF_GENERATOR_COMMIT}.tar.gz /tmp/src.tar.gz
+WORKDIR /src
+RUN tar xzf /tmp/src.tar.gz --strip-components=1 \
+ && npm ci --ignore-scripts --no-audit --no-fund \
+ && npx vite build --mode production
+
+# ──────────────────────────────────────────────
 FROM node:22-trixie-slim AS runtime
 
 # Extra Debian printer driver packages for printers that are not driverless,
@@ -26,6 +38,8 @@ RUN apt-get update \
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/job-state.test /app/job-state.test
 COPY --from=build /build/dist/cli.js /app/cli.js
+COPY --from=pdf-renderer /src/dist/ksef-fe-invoice-converter.js /app/vendor/ksef-pdf.js
+COPY --from=pdf-renderer /src/LICENSE /app/vendor/ksef-pdf.LICENSE
 
 WORKDIR /data
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
