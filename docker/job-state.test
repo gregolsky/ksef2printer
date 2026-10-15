@@ -1,0 +1,13 @@
+# Prints job-state and job-state-reasons for the job URI given on the command line.
+{
+	NAME "Get job state"
+	OPERATION Get-Job-Attributes
+	GROUP operation-attributes-tag
+	ATTR charset attributes-charset utf-8
+	ATTR language attributes-natural-language en
+	ATTR uri job-uri $uri
+	ATTR keyword requested-attributes job-state,job-state-reasons
+	STATUS successful-ok
+	DISPLAY job-state
+	DISPLAY job-state-reasons
+}

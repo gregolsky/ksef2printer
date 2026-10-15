@@ -1,0 +1,15 @@
+services:
+  ksef2printer:
+    image: ghcr.io/gregolsky/ksef2printer:latest
+    build: .
+    # Host networking lets the container see printers announced over mDNS (*.local).
+    network_mode: host
+    env_file:
+      - path: .env
+        required: false
+      # Written by `./print.sh setup`.
+      - path: config/printer.env
+        required: false
+    volumes:
+      - ./data:/data
+      - ./config:/config
