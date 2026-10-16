@@ -42,7 +42,12 @@ const RunEnv = z.object({
   NTFY_URL: z.string().url().optional(),
   NTFY_TOPIC: z.string().min(1).optional(),
   NTFY_TOKEN: z.string().min(1).optional(),
-  RETRY_DELAYS_SECONDS: z.string().default('10,30,90'),
+  RETRY_DELAYS_SECONDS: z
+    .string()
+    .default('10,30,90')
+    .transform((s) => s.split(',').map((v) => v.trim()).filter((v) => v !== ''))
+    .refine((vs) => vs.every((v) => /^\d+(\.\d+)?$/.test(v)), 'must be comma-separated seconds, e.g. 10,30,90')
+    .transform((vs) => vs.map((v) => Number(v) * 1000)),
 })
 
 export interface RunConfig {
@@ -61,7 +66,7 @@ export function loadRunConfig(env: NodeJS.ProcessEnv = process.env): RunConfig {
     ksef: { token: e.KSEF_TOKEN, nip: e.KSEF_NIP, env: e.KSEF_ENV },
     dataDir: e.DATA_DIR,
     pdfRenderer: e.PDF_RENDERER,
-    retryDelaysMs: e.RETRY_DELAYS_SECONDS.split(',').filter((s) => s.trim() !== '').map((s) => Number(s) * 1000),
+    retryDelaysMs: e.RETRY_DELAYS_SECONDS,
   }
   if (e.NTFY_URL != null && e.NTFY_TOPIC != null) {
     cfg.ntfy = { url: e.NTFY_URL, topic: e.NTFY_TOPIC, ...(e.NTFY_TOKEN != null ? { token: e.NTFY_TOKEN } : {}) }

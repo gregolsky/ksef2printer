@@ -1,5 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { writeFileAtomic } from './fs.js'
 
 export interface DocState {
   status: 'printed' | 'failed'
@@ -22,10 +22,6 @@ export async function loadState(file: string): Promise<MonthState> {
   }
 }
 
-/** Writes via a temp file and rename, so an interrupted run never leaves a half-written state file. */
 export async function saveState(file: string, state: MonthState): Promise<void> {
-  await mkdir(dirname(file), { recursive: true })
-  const tmp = `${file}.tmp`
-  await writeFile(tmp, JSON.stringify(state, null, 2) + '\n')
-  await rename(tmp, file)
+  await writeFileAtomic(file, JSON.stringify(state, null, 2) + '\n')
 }

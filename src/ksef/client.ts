@@ -47,7 +47,8 @@ const Tokens = z.object({ accessToken: TokenInfo, refreshToken: TokenInfo })
 const Refreshed = z.object({ accessToken: TokenInfo })
 
 export const InvoiceMetadata = z.object({
-  ksefNumber: z.string(),
+  // Used in file names, so only the characters a KSeF number can contain are accepted.
+  ksefNumber: z.string().regex(/^[0-9A-Za-z-]+$/, 'not a KSeF number'),
   invoiceNumber: z.string(),
   issueDate: z.string(),
   seller: z.object({ nip: z.string(), name: z.string().nullish() }),
@@ -58,6 +59,8 @@ export const InvoiceMetadata = z.object({
   grossAmount: z.number(),
   currency: z.string(),
   formCode: z.object({ systemCode: z.string(), schemaVersion: z.string(), value: z.string() }),
+  /** SHA-256 of the invoice XML, Base64. */
+  invoiceHash: z.string(),
 })
 export type InvoiceMetadata = z.infer<typeof InvoiceMetadata>
 
@@ -104,7 +107,7 @@ export class KsefClient {
     this.logger = opts.logger ?? noopLogger
   }
 
-  /** One HTTP call with retry on 429 (honouring Retry-After) and 5xx. */
+  /** One HTTP call with retry on network errors, 429 (honouring Retry-After) and 5xx. */
   private async call(method: string, path: string, init: { bearer?: string; body?: unknown; accept?: string } = {}): Promise<Response> {
     const headers: Record<string, string> = { Accept: init.accept ?? 'application/json' }
     if (init.bearer != null) headers['Authorization'] = `Bearer ${init.bearer}`
@@ -112,7 +115,17 @@ export class KsefClient {
     for (let attempt = 1; ; attempt++) {
       const reqInit: RequestInit = { method, headers, signal: AbortSignal.timeout(30_000) }
       if (init.body !== undefined) reqInit.body = JSON.stringify(init.body)
-      const res = await this.fetch(`${this.base}${path}`, reqInit)
+      let res: Response
+      try {
+        res = await this.fetch(`${this.base}${path}`, reqInit)
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
+        if (attempt >= MAX_ATTEMPTS) throw new KsefError(`${method} ${path} failed: ${reason}`)
+        const waitMs = 1000 * 2 ** attempt
+        this.logger.warn(`${method} ${path} failed (${reason}), retrying in ${waitMs / 1000}s`)
+        await this.sleep(waitMs)
+        continue
+      }
       const retryable = res.status === 429 || res.status >= 500
       if (res.ok || !retryable || attempt >= MAX_ATTEMPTS) {
         if (!res.ok) {
@@ -172,7 +185,7 @@ export class KsefClient {
       accessValidUntil: Date.parse(tokens.accessToken.validUntil),
       refreshToken: tokens.refreshToken.token,
     }
-    this.logger.info(`authenticated to KSeF (${this.opts.env}) for NIP ${this.opts.nip}`)
+    this.logger.info(`authenticated to KSeF (${this.opts.env})`)
   }
 
   /** Returns a valid access token, refreshing it a minute before it expires. */
@@ -223,12 +236,12 @@ export class KsefClient {
     }
   }
 
-  /** The invoice XML as stored in KSeF. */
-  async downloadXml(ksefNumber: string): Promise<string> {
+  /** The invoice XML exactly as stored in KSeF (raw bytes: decoding would drop a BOM and change the hash). */
+  async downloadXml(ksefNumber: string): Promise<Buffer> {
     const res = await this.call('GET', `/invoices/ksef/${encodeURIComponent(ksefNumber)}`, {
       bearer: await this.accessToken(),
       accept: 'application/xml',
     })
-    return res.text()
+    return Buffer.from(await res.arrayBuffer())
   }
 }

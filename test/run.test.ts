@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,9 +9,13 @@ import { noopLogger } from '../src/logger.js'
 import type { JobOutcome } from '../src/printer/cups.js'
 import { pruneRetention, runMonth, type RunDeps, type RunOptions } from '../src/run.js'
 
+const fakeXml = (ksefNumber: string) => Buffer.from(`\ufeff<Faktura>${ksefNumber}</Faktura>`)
+const sha256 = (data: Buffer) => createHash('sha256').update(data).digest('base64')
+
 function meta(n: number, issueDate: string, seller = '1111111111'): InvoiceMetadata {
+  const ksefNumber = `${seller}-20261015-${n}`
   return {
-    ksefNumber: `${seller}-20261015-${n}`,
+    ksefNumber,
     invoiceNumber: `FV/${n}`,
     issueDate,
     seller: { nip: seller, name: `Seller ${n}` },
@@ -18,25 +23,34 @@ function meta(n: number, issueDate: string, seller = '1111111111'): InvoiceMetad
     grossAmount: 100 + n,
     currency: 'PLN',
     formCode: { systemCode: 'FA (3)', schemaVersion: '1-0E', value: 'FA' },
+    invoiceHash: sha256(fakeXml(ksefNumber)),
   }
 }
 
 interface Fake {
   deps: RunDeps
+  downloads: string[]
+  rendered: string[]
   submitted: string[]
   notes: string[]
   outcomes: JobOutcome[]
 }
 
 function fake(invoices: Partial<Record<SubjectType, InvoiceMetadata[]>>): Fake {
-  const f: Fake = { submitted: [], notes: [], outcomes: [], deps: undefined as unknown as RunDeps }
+  const f: Fake = { downloads: [], rendered: [], submitted: [], notes: [], outcomes: [], deps: undefined as unknown as RunDeps }
   let job = 0
   f.deps = {
     ksef: {
       queryMetadata: async (subject) => invoices[subject] ?? [],
-      downloadXml: async (k) => `<Faktura>${k}</Faktura>`,
+      downloadXml: async (k) => {
+        f.downloads.push(k)
+        return fakeXml(k)
+      },
     },
-    render: async (xml) => Buffer.concat([Buffer.from('%PDF-'), xml]),
+    render: async (xml, _k, qr) => {
+      f.rendered.push(qr)
+      return Buffer.concat([Buffer.from('%PDF-'), xml])
+    },
     printer: {
       submit: async (file) => {
         f.submitted.push(file)
@@ -113,6 +127,44 @@ describe('runMonth', () => {
     expect(f.notes).toEqual([])
   })
 
+  it('keeps the XML byte for byte and puts the KSeF hash in the QR code', async () => {
+    const f = fake({ Subject1: [meta(1, '2026-10-02')] })
+    await runMonth(opts, f.deps)
+    const xml = await readFile(join(dataDir, 'invoices', '2026-10', '1111111111-20261015-1.xml'))
+    expect(xml.equals(fakeXml('1111111111-20261015-1'))).toBe(true)
+    expect(f.rendered).toEqual([invoiceQrUrl('test', '1111111111', '2026-10-02', meta(1, '2026-10-02').invoiceHash)])
+  })
+
+  it('does not print an invoice whose XML does not match the KSeF hash', async () => {
+    const f = fake({ Subject1: [{ ...meta(1, '2026-10-02'), invoiceHash: sha256(Buffer.from('other')) }] })
+    const summary = await runMonth(opts, f.deps)
+    expect(summary.failed).toBe(1)
+    expect(f.submitted).toEqual([])
+  })
+
+  it('downloads again and re-renders when a saved XML is damaged', async () => {
+    const dir = join(dataDir, 'invoices', '2026-10')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, '1111111111-20261015-1.xml'), '<Fak')
+    await writeFile(join(dir, '1111111111-20261015-1.pdf'), 'stale')
+    const f = fake({ Subject1: [meta(1, '2026-10-02')] })
+    await runMonth(opts, f.deps)
+    expect(f.downloads).toEqual(['1111111111-20261015-1'])
+    expect(f.rendered).toHaveLength(1)
+  })
+
+  it('reuses saved XML and PDF on a retry run', async () => {
+    const invoices = { Subject1: [meta(1, '2026-10-02')] }
+    const first = fake(invoices)
+    first.outcomes.push('aborted', 'aborted', 'aborted')
+    await runMonth(opts, first.deps)
+    const second = fake(invoices)
+    await runMonth(opts, second.deps)
+    expect(second.downloads).toEqual([])
+    expect(second.rendered).toEqual([])
+    expect(second.submitted).toHaveLength(1)
+  })
+
   it('does not print when the PDF cannot be produced', async () => {
     const f = fake({ Subject1: [meta(1, '2026-10-02')] })
     f.deps.render = async () => {
@@ -139,7 +191,7 @@ describe('pruneRetention', () => {
 
 describe('invoiceQrUrl', () => {
   it('builds the KOD I link from seller NIP, issue date and file hash', () => {
-    expect(invoiceQrUrl('test', '1111111111', '2026-02-01', Buffer.from('x'))).toBe(
+    expect(invoiceQrUrl('test', '1111111111', '2026-02-01', sha256(Buffer.from('x')))).toBe(
       'https://qr-test.ksef.mf.gov.pl/invoice/1111111111/01-02-2026/LXEWQrcmsEQBYnyp-6wy9chTD7GQPMTbAiWHF5IaSIE',
     )
   })

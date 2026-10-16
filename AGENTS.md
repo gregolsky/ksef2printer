@@ -33,7 +33,8 @@ Run `pnpm lint && pnpm test` before every commit.
 | `src/ksef/client.ts` | KSeF API 2.0: token auth, metadata query (paging/truncation), XML download, 429/5xx retry |
 | `src/ksef/qr.ts`, `src/ksef/time.ts` | KOD I verification link; Europe/Warsaw month bounds |
 | `src/pdf/render.ts` | Loads the vendored ksef-pdf-generator build and renders XML → PDF |
-| `src/state.ts`, `src/notify.ts` | Atomic per-month state file; ntfy publisher (never fails the run) |
+| `src/state.ts`, `src/notify.ts` | Per-month state file; ntfy publisher (never fails the run) |
+| `src/fs.ts` | `exists`, `writeFileAtomic` (temp file + rename) for every file a later run reuses |
 | `scripts/seed-test-invoices.ts` | Issues fictitious invoices on the KSeF **test** environment |
 | `src/exec.ts` | `run()` wrapper over `execFile`; inject a fake `Run` in tests |
 | `docker/entrypoint.sh` | Starts `cupsd`, creates the `ksef` queue from `PRINTER_*` env, execs the CLI |
@@ -45,8 +46,9 @@ Run `pnpm lint && pnpm test` before every commit.
 - **Never send data straight to a printer** (`nc`, raw sockets). Always go through the CUPS queue, so the driver's filter chain is applied. Raw PDF sent to a host-based printer prints blank pages.
 - **Do not print on a real printer without asking the user first** — it uses paper. Test with a fake sink instead: a `socket://127.0.0.1:9100` queue with a local TCP listener inside the container.
 - **Keep shell-outs injectable.** New external commands go through `Run` so they can be tested without CUPS.
-- **No secrets or personal data in the repo.** `.env` and `config/` are git-ignored; examples use `192.168.1.x` addresses and made-up hostnames. KSeF tokens, NIPs and invoice contents never go in fixtures, logs or commits.
+- **No secrets or personal data in the repo.** `.env` and `config/` are git-ignored; examples use `192.168.1.x` addresses and made-up hostnames. KSeF tokens, real NIPs and invoice contents never go in fixtures, docs or commits. Tokens never go in logs. Runtime output on the user's own machine may show invoice numbers and counterparty names, since that is what the user needs to see.
 - **Style:** TypeScript strict mode with `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess`; ESM with `.js` import suffixes; zod for env parsing; no new runtime dependencies without a reason.
 - **KSeF environments.** Develop against `KSEF_ENV=test` with random NIPs and fictitious data. Never run seed or write operations against `prod` or `demo`.
 - The API contract is the official `open-api.json` in [CIRFMF/ksef-docs](https://github.com/CIRFMF/ksef-docs); check request/response shapes there, not from memory.
-- Exit codes: `0` ok, `1` some printing failed, `2` configuration error.
+- Exit codes: `0` ok, `1` some printing failed or the run stopped part way, `2` configuration error.
+- The KOD I QR code uses `invoiceHash` from KSeF metadata. Keep invoice XML as raw bytes (never `res.text()`), because decoding drops a BOM and changes the hash.

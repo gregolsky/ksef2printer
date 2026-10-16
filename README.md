@@ -33,9 +33,9 @@ KSEF_NIP=1234567890
 ./print.sh 2026-10             # print the rest
 ```
 
-Purchases print first, then sales, each oldest first. Every printed invoice is remembered in `data/state/`, so running the same month again only prints what is missing. A failed print is retried 3 times. Invoice XML and PDFs are kept in `data/invoices/` for a year, then deleted.
+Purchases print first, then sales, each oldest first. Every printed invoice is remembered in `data/state/`, so running the same month again only prints what is missing. A failed print is retried 3 times. The QR code on each printed invoice carries the hash KSeF holds for it, and an invoice whose downloaded XML doesn't match that hash is not printed. Invoice XML and PDFs are kept in `data/invoices/` for a year, then deleted.
 
-Set `NTFY_URL` and `NTFY_TOPIC` in `.env` to get an [ntfy](https://ntfy.sh) notification for every printed or failed invoice and a summary at the end.
+Set `NTFY_URL` and `NTFY_TOPIC` in `.env` to get an [ntfy](https://ntfy.sh) notification for every printed or failed invoice, a summary at the end, and an alert if the run stops part way. Notifications include invoice numbers and counterparty names. On the public ntfy.sh server anyone who knows the topic can read them, so use a long random topic, a protected topic with `NTFY_TOKEN`, or your own ntfy server.
 
 `setup` saves the printer settings to `config/printer.env`, for example:
 
@@ -72,7 +72,7 @@ To add duplex or other options, edit `PRINTER_OPTIONS` (space-separated CUPS opt
   docker compose build --build-arg EXTRA_DRIVER_PACKAGES="hplip printer-driver-foo2zjs printer-driver-splix"
   ```
   Then run `./print.sh setup` again. A vendor PPD file also works: put it at `config/printer.ppd` and set `PRINTER_MODEL=/config/printer.ppd`.
-- **What "printed" means:** over `ipp://`, a job counts as done when the printer reports it finished. Over `socket://` (port 9100), the printer gives no feedback, so it means the data was delivered.
+- **What "printed" means:** over `ipp://`, a job counts as done when the printer reports it finished. Over `socket://` (port 9100), the printer gives no feedback, so it means the data was delivered. If a `socket://` job times out, it may have printed anyway, so the retry can give you a duplicate page. A duplicate is safer than a missing invoice.
 
 ## Development
 

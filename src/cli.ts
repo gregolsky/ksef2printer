@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline/promises'
 import { loadPrinterConfig, loadRunConfig, type PrinterConfig } from './config.js'
 import { run } from './exec.js'
 import { KsefClient } from './ksef/client.js'
-import { parseMonth } from './ksef/time.js'
+import { formatMonth, parseMonth } from './ksef/time.js'
 import { consoleLogger as log } from './logger.js'
 import { noopNotifier, ntfyNotifier } from './notify.js'
 import { renderInvoicePdf } from './pdf/render.js'
@@ -167,8 +167,7 @@ async function printMonth(args: readonly string[]): Promise<number> {
 
   const cfg = loadRunConfig()
   const printerCfg = loadPrinterConfig()
-  const ksef = new KsefClient({ ...cfg.ksef, logger: log })
-  const printer = cupsPrinter(printerCfg)
+  const notifier = cfg.ntfy != null ? ntfyNotifier(cfg.ntfy, log) : noopNotifier
   try {
     const summary = await runMonth(
       {
@@ -181,10 +180,10 @@ async function printMonth(args: readonly string[]): Promise<number> {
         retryDelaysMs: cfg.retryDelaysMs,
       },
       {
-        ksef,
+        ksef: new KsefClient({ ...cfg.ksef, logger: log }),
         render: (xml, ksefNumber, qr) => renderInvoicePdf(cfg.pdfRenderer, xml, ksefNumber, qr),
-        printer,
-        notifier: cfg.ntfy != null ? ntfyNotifier(cfg.ntfy, log) : noopNotifier,
+        printer: cupsPrinter(printerCfg),
+        notifier,
         logger: log,
         sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
         now: () => new Date(),
@@ -192,8 +191,11 @@ async function printMonth(args: readonly string[]): Promise<number> {
     )
     return summary.failed > 0 ? EXIT_FAILED : EXIT_OK
   } catch (err) {
-    log.error(err instanceof Error ? err.message : String(err))
-    return EXIT_CONFIG
+    // KSeF unreachable, authentication rejected, disk full…: the run stopped part way.
+    const error = err instanceof Error ? err.message : String(err)
+    log.error(error)
+    await notifier.send(`✗ ksef2printer ${formatMonth(month)} stopped`, error, { priority: 'high', tags: ['x'] })
+    return EXIT_FAILED
   }
 }
 

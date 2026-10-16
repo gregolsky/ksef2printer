@@ -1,5 +1,7 @@
-import { access, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdir, readdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { exists, writeFileAtomic } from './fs.js'
 import type { InvoiceMetadata, KsefEnv, SubjectType } from './ksef/client.js'
 import { invoiceQrUrl } from './ksef/qr.js'
 import { formatMonth, monthBounds, type Month } from './ksef/time.js'
@@ -11,7 +13,7 @@ import { loadState, saveState, type DocState } from './state.js'
 export interface RunDeps {
   ksef: {
     queryMetadata(subject: SubjectType, from: string, to: string): Promise<InvoiceMetadata[]>
-    downloadXml(ksefNumber: string): Promise<string>
+    downloadXml(ksefNumber: string): Promise<Buffer>
   }
   render(xml: Buffer, ksefNumber: string, qrCode: string): Promise<Buffer>
   printer: {
@@ -57,15 +59,6 @@ function label(d: Doc): string {
   return `${d.kind === 'purchase' ? 'ZAKUP' : 'SPRZEDAŻ'} ${d.meta.invoiceNumber}${who != null ? ` (${who})` : ''}`
 }
 
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path)
-    return true
-  } catch {
-    return false
-  }
-}
-
 /** Deletes invoice files and print state for months that ended more than `months` months ago. */
 export async function pruneRetention(dataDir: string, now: Date, months: number, logger: Logger): Promise<void> {
   const cutoff = now.getUTCFullYear() * 12 + now.getUTCMonth() - months
@@ -92,16 +85,27 @@ export async function pruneRetention(dataDir: string, now: Date, months: number,
   }
 }
 
-/** Downloads the XML and renders the PDF, reusing files left by an earlier run. Returns the PDF path. */
+const sha256 = (data: Buffer) => createHash('sha256').update(data).digest('base64')
+
+/**
+ * Downloads the XML and renders the PDF, reusing files left by an earlier run. The XML must match the
+ * hash KSeF reports for the invoice: that hash is what the printed QR code (KOD I) verifies.
+ * Returns the PDF path.
+ */
 async function preparePdf(d: Doc, dir: string, env: KsefEnv, deps: RunDeps): Promise<string> {
   const k = d.meta.ksefNumber
   const xmlPath = join(dir, `${k}.xml`)
   const pdfPath = join(dir, `${k}.pdf`)
-  if (!(await exists(xmlPath))) await writeFile(xmlPath, await deps.ksef.downloadXml(k))
+  let xml: Buffer | null = (await exists(xmlPath)) ? await readFile(xmlPath) : null
+  if (xml == null || sha256(xml) !== d.meta.invoiceHash) {
+    xml = await deps.ksef.downloadXml(k)
+    if (sha256(xml) !== d.meta.invoiceHash) throw new Error('downloaded XML does not match the hash KSeF reports for it')
+    await writeFileAtomic(xmlPath, xml)
+    await rm(pdfPath, { force: true })
+  }
   if (!(await exists(pdfPath))) {
-    const xml = await readFile(xmlPath)
-    const qr = invoiceQrUrl(env, d.meta.seller.nip, d.meta.issueDate, xml)
-    await writeFile(pdfPath, await deps.render(xml, k, qr))
+    const qr = invoiceQrUrl(env, d.meta.seller.nip, d.meta.issueDate, d.meta.invoiceHash)
+    await writeFileAtomic(pdfPath, await deps.render(xml, k, qr))
   }
   return pdfPath
 }
