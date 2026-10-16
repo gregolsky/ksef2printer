@@ -2,7 +2,7 @@ import { access, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promise
 import { join } from 'node:path'
 import type { InvoiceMetadata, KsefEnv, SubjectType } from './ksef/client.js'
 import { invoiceQrUrl } from './ksef/qr.js'
-import { monthBounds, type Month } from './ksef/time.js'
+import { formatMonth, monthBounds, type Month } from './ksef/time.js'
 import type { Logger } from './logger.js'
 import type { Notifier } from './notify.js'
 import type { JobOutcome } from './printer/cups.js'
@@ -52,9 +52,6 @@ interface Doc {
   meta: InvoiceMetadata
 }
 
-const pad = (n: number) => String(n).padStart(2, '0')
-const monthKey = (m: Month) => `${m.year}-${pad(m.month)}`
-
 function label(d: Doc): string {
   const who = d.kind === 'purchase' ? d.meta.seller.name : d.meta.buyer.name
   return `${d.kind === 'purchase' ? 'ZAKUP' : 'SPRZEDAŻ'} ${d.meta.invoiceNumber}${who != null ? ` (${who})` : ''}`
@@ -95,9 +92,39 @@ export async function pruneRetention(dataDir: string, now: Date, months: number,
   }
 }
 
+/** Downloads the XML and renders the PDF, reusing files left by an earlier run. Returns the PDF path. */
+async function preparePdf(d: Doc, dir: string, env: KsefEnv, deps: RunDeps): Promise<string> {
+  const k = d.meta.ksefNumber
+  const xmlPath = join(dir, `${k}.xml`)
+  const pdfPath = join(dir, `${k}.pdf`)
+  if (!(await exists(xmlPath))) await writeFile(xmlPath, await deps.ksef.downloadXml(k))
+  if (!(await exists(pdfPath))) {
+    const xml = await readFile(xmlPath)
+    const qr = invoiceQrUrl(env, d.meta.seller.nip, d.meta.issueDate, xml)
+    await writeFile(pdfPath, await deps.render(xml, k, qr))
+  }
+  return pdfPath
+}
+
+type Attempt = { ok: true; jobId: string } | { ok: false; error: string; jobId?: string }
+
+/** Submits the PDF once and waits for the job to finish; a job that times out is cancelled. */
+async function printOnce(printer: RunDeps['printer'], pdfPath: string, title: string, timeoutMs: number): Promise<Attempt> {
+  let jobId: string | undefined
+  try {
+    jobId = await printer.submit(pdfPath, title)
+    const { outcome, reasons } = await printer.waitForJob(jobId, timeoutMs)
+    if (outcome === 'completed') return { ok: true, jobId }
+    if (outcome === 'timeout') await printer.cancel(jobId)
+    return { ok: false, jobId, error: `job ${jobId} ${outcome}${reasons !== '' ? ` (${reasons})` : ''}` }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err), ...(jobId != null ? { jobId } : {}) }
+  }
+}
+
 export async function runMonth(opts: RunOptions, deps: RunDeps): Promise<RunSummary> {
   const { logger: log } = deps
-  const key = monthKey(opts.month)
+  const key = formatMonth(opts.month)
   if (!opts.dryRun) await pruneRetention(opts.dataDir, deps.now(), opts.retentionMonths ?? 12, log)
 
   const { from, to } = monthBounds(opts.month)
@@ -140,14 +167,7 @@ export async function runMonth(opts: RunOptions, deps: RunDeps): Promise<RunSumm
 
     let pdfPath: string
     try {
-      const xmlPath = join(dir, `${k}.xml`)
-      pdfPath = join(dir, `${k}.pdf`)
-      if (!(await exists(xmlPath))) await writeFile(xmlPath, await deps.ksef.downloadXml(k))
-      if (!(await exists(pdfPath))) {
-        const xml = await readFile(xmlPath)
-        const qr = invoiceQrUrl(opts.env, d.meta.seller.nip, d.meta.issueDate, xml)
-        await writeFile(pdfPath, await deps.render(xml, k, qr))
-      }
+      pdfPath = await preparePdf(d, dir, opts.env, deps)
     } catch (err) {
       const error = `could not prepare PDF: ${err instanceof Error ? err.message : String(err)}`
       state[k] = record({ status: 'failed', attempts: 0, error })
@@ -162,20 +182,15 @@ export async function runMonth(opts: RunOptions, deps: RunDeps): Promise<RunSumm
     let last = ''
     let printed = false
     let jobId: string | undefined
-    for (let attempt = 1; attempt <= attempts && !printed; attempt++) {
-      try {
-        jobId = await deps.printer.submit(pdfPath, `${d.meta.invoiceNumber}`)
-        const { outcome, reasons } = await deps.printer.waitForJob(jobId, opts.printTimeoutMs)
-        if (outcome === 'completed') {
-          printed = true
-          state[k] = record({ status: 'printed', attempts: attempt, jobId })
-          break
-        }
-        if (outcome === 'timeout') await deps.printer.cancel(jobId)
-        last = `job ${jobId} ${outcome}${reasons !== '' ? ` (${reasons})` : ''}`
-      } catch (err) {
-        last = err instanceof Error ? err.message : String(err)
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const result = await printOnce(deps.printer, pdfPath, d.meta.invoiceNumber, opts.printTimeoutMs)
+      jobId = result.jobId ?? jobId
+      if (result.ok) {
+        printed = true
+        state[k] = record({ status: 'printed', attempts: attempt, jobId: result.jobId })
+        break
       }
+      last = result.error
       log.warn(`${label(d)}: attempt ${attempt}/${attempts} failed: ${last}`)
       state[k] = record({ status: 'failed', attempts: attempt, error: last, ...(jobId != null ? { jobId } : {}) })
       await saveState(stateFile, state)

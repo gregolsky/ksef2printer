@@ -1,7 +1,7 @@
 import { access, mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname } from 'node:path'
 import { createInterface } from 'node:readline/promises'
-import { loadPrinterConfig, loadRunConfig } from './config.js'
+import { loadPrinterConfig, loadRunConfig, type PrinterConfig } from './config.js'
 import { run } from './exec.js'
 import { KsefClient } from './ksef/client.js'
 import { parseMonth } from './ksef/time.js'
@@ -29,6 +29,12 @@ export const EXIT_OK = 0
 export const EXIT_FAILED = 1
 export const EXIT_CONFIG = 2
 
+const NO_PRINTERS = 'No printers found. The container needs host networking (network_mode: host) and the printer must be on.'
+
+function cupsPrinter(cfg: PrinterConfig): CupsPrinter {
+  return new CupsPrinter({ queue: cfg.queue, options: cfg.options, jobStateTest: cfg.jobStateTest, logger: log })
+}
+
 async function printPdf(file: string | undefined): Promise<number> {
   if (file == null) {
     log.error('print-pdf needs a file')
@@ -41,7 +47,7 @@ async function printPdf(file: string | undefined): Promise<number> {
     return EXIT_CONFIG
   }
   const cfg = loadPrinterConfig()
-  const printer = new CupsPrinter({ queue: cfg.queue, options: cfg.options, jobStateTest: cfg.jobStateTest, logger: log })
+  const printer = cupsPrinter(cfg)
   try {
     const jobId = await printer.submit(file, basename(file))
     log.info(`submitted ${file} as ${jobId}`)
@@ -82,7 +88,7 @@ function show(found: Array<{ printer: FoundPrinter; settings: PrinterSettings }>
 async function discover(): Promise<number> {
   const found = await scan()
   if (found.length === 0) {
-    console.log('No printers found. The container needs host networking (network_mode: host) and the printer must be on.')
+    console.log(NO_PRINTERS)
     return EXIT_FAILED
   }
   show(found)
@@ -90,16 +96,16 @@ async function discover(): Promise<number> {
 }
 
 async function choose(count: number, arg: string | undefined): Promise<number | null> {
-  if (arg != null) {
-    const n = Number(arg)
+  const pick = (s: string) => {
+    const n = Number(s)
     return Number.isInteger(n) && n >= 1 && n <= count ? n : null
   }
+  if (arg != null) return pick(arg)
   if (!process.stdin.isTTY) return count === 1 ? 1 : null
   const rl = createInterface({ input: process.stdin, output: process.stdout })
   try {
-    const answer = await rl.question(`Which printer? [1-${count}] `)
-    const n = Number(answer.trim() === '' && count === 1 ? '1' : answer.trim())
-    return Number.isInteger(n) && n >= 1 && n <= count ? n : null
+    const answer = (await rl.question(`Which printer? [1-${count}] `)).trim()
+    return pick(answer === '' && count === 1 ? '1' : answer)
   } finally {
     rl.close()
   }
@@ -108,7 +114,7 @@ async function choose(count: number, arg: string | undefined): Promise<number | 
 async function setup(arg: string | undefined): Promise<number> {
   const found = await scan()
   if (found.length === 0) {
-    console.log('No printers found. The container needs host networking (network_mode: host) and the printer must be on.')
+    console.log(NO_PRINTERS)
     return EXIT_FAILED
   }
   show(found)
@@ -162,12 +168,7 @@ async function printMonth(args: readonly string[]): Promise<number> {
   const cfg = loadRunConfig()
   const printerCfg = loadPrinterConfig()
   const ksef = new KsefClient({ ...cfg.ksef, logger: log })
-  const printer = new CupsPrinter({
-    queue: printerCfg.queue,
-    options: printerCfg.options,
-    jobStateTest: printerCfg.jobStateTest,
-    logger: log,
-  })
+  const printer = cupsPrinter(printerCfg)
   try {
     const summary = await runMonth(
       {

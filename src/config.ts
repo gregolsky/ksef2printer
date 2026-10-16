@@ -1,5 +1,14 @@
 import { z } from 'zod'
 
+function parseEnv<T extends z.ZodTypeAny>(schema: T, env: Record<string, string | undefined>): z.infer<T> {
+  const parsed = schema.safeParse(env)
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')
+    throw new Error(`Invalid configuration: ${issues}`)
+  }
+  return parsed.data
+}
+
 const PrinterEnv = z.object({
   PRINTER_QUEUE: z.string().min(1).default('ksef'),
   PRINTER_OPTIONS: z.string().default(''),
@@ -15,12 +24,7 @@ export interface PrinterConfig {
 }
 
 export function loadPrinterConfig(env: NodeJS.ProcessEnv = process.env): PrinterConfig {
-  const parsed = PrinterEnv.safeParse(env)
-  if (!parsed.success) {
-    const issues = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')
-    throw new Error(`Invalid configuration: ${issues}`)
-  }
-  const e = parsed.data
+  const e = parseEnv(PrinterEnv, env)
   return {
     queue: e.PRINTER_QUEUE,
     options: e.PRINTER_OPTIONS.split(/\s+/).filter((o) => o !== ''),
@@ -50,12 +54,8 @@ export interface RunConfig {
 }
 
 export function loadRunConfig(env: NodeJS.ProcessEnv = process.env): RunConfig {
-  const parsed = RunEnv.safeParse(Object.fromEntries(Object.entries(env).filter(([, v]) => v !== '')))
-  if (!parsed.success) {
-    const issues = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')
-    throw new Error(`Invalid configuration: ${issues}`)
-  }
-  const e = parsed.data
+  // Empty values (e.g. `NTFY_URL=` left in .env) count as unset.
+  const e = parseEnv(RunEnv, Object.fromEntries(Object.entries(env).filter(([, v]) => v !== '')))
   if (e.NTFY_URL != null && e.NTFY_TOPIC == null) throw new Error('Invalid configuration: NTFY_TOPIC is required with NTFY_URL')
   const cfg: RunConfig = {
     ksef: { token: e.KSEF_TOKEN, nip: e.KSEF_NIP, env: e.KSEF_ENV },

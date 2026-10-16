@@ -24,6 +24,9 @@ export function parseMonth(s: string): Month | null {
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
+/** "2026-10" */
+export const formatMonth = ({ year, month }: Month) => `${year}-${pad(month)}`
+
 /** First and last instant of a calendar month in Polish local time, as ISO-8601 with offset. */
 export function monthBounds({ year, month }: Month): { from: string; to: string } {
   const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate()
