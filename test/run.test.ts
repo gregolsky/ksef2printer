@@ -34,10 +34,12 @@ interface Fake {
   submitted: string[]
   notes: string[]
   outcomes: JobOutcome[]
+  printerChecks: number
+  printerUp: boolean
 }
 
 function fake(invoices: Partial<Record<SubjectType, InvoiceMetadata[]>>): Fake {
-  const f: Fake = { downloads: [], rendered: [], submitted: [], notes: [], outcomes: [], deps: undefined as unknown as RunDeps }
+  const f: Fake = { downloads: [], rendered: [], submitted: [], notes: [], outcomes: [], printerChecks: 0, printerUp: true, deps: undefined as unknown as RunDeps }
   let job = 0
   f.deps = {
     ksef: {
@@ -58,6 +60,10 @@ function fake(invoices: Partial<Record<SubjectType, InvoiceMetadata[]>>): Fake {
       },
       waitForJob: async () => ({ outcome: f.outcomes.shift() ?? 'completed', reasons: '' }),
       cancel: async () => {},
+    },
+    checkPrinter: async () => {
+      f.printerChecks++
+      if (!f.printerUp) throw new Error('printer not reachable at 192.168.1.50:9100')
     },
     notifier: { send: async (title) => void f.notes.push(title) },
     logger: noopLogger,
@@ -165,6 +171,45 @@ describe('runMonth', () => {
     expect(second.submitted).toHaveLength(1)
   })
 
+  it('checks the printer once before printing', async () => {
+    const f = fake({ Subject1: [meta(1, '2026-10-02'), meta(2, '2026-10-03')] })
+    await runMonth(opts, f.deps)
+    expect(f.printerChecks).toBe(1)
+  })
+
+  it('stops before printing anything when the printer is unreachable', async () => {
+    const f = fake({ Subject1: [meta(1, '2026-10-02')] })
+    f.printerUp = false
+    await expect(runMonth(opts, f.deps)).rejects.toThrow('printer not reachable')
+    expect(f.downloads).toEqual([])
+    expect(f.submitted).toEqual([])
+  })
+
+  it('does not check the printer when there is nothing to print', async () => {
+    const f = fake({})
+    await runMonth(opts, f.deps)
+    expect(f.printerChecks).toBe(0)
+  })
+
+  it('stops at the first timeout when the printer has gone away', async () => {
+    const f = fake({ Subject1: [meta(1, '2026-10-02'), meta(2, '2026-10-03')] })
+    f.outcomes.push('timeout')
+    f.deps.printer.cancel = async () => {
+      f.printerUp = false
+    }
+    await expect(runMonth(opts, f.deps)).rejects.toThrow('printer not reachable')
+    expect(f.submitted).toHaveLength(1)
+    const state = JSON.parse(await readFile(join(dataDir, 'state', '2026-10.json'), 'utf8'))
+    expect(state['1111111111-20261015-1']).toMatchObject({ status: 'failed', attempts: 1 })
+  })
+
+  it('stops the run when every attempt times out, instead of waiting on each invoice', async () => {
+    const f = fake({ Subject1: [meta(1, '2026-10-02'), meta(2, '2026-10-03')] })
+    f.outcomes.push('timeout', 'timeout', 'timeout')
+    await expect(runMonth(opts, f.deps)).rejects.toThrow('printer stopped responding')
+    expect(f.submitted).toHaveLength(3)
+  })
+
   it('does not print when the PDF cannot be produced', async () => {
     const f = fake({ Subject1: [meta(1, '2026-10-02')] })
     f.deps.render = async () => {
@@ -178,14 +223,17 @@ describe('runMonth', () => {
 
 describe('pruneRetention', () => {
   it('removes months that ended more than a year ago', async () => {
+    await mkdir(join(dataDir, 'state'), { recursive: true })
+    await mkdir(join(dataDir, 'logs'), { recursive: true })
     for (const m of ['2025-09', '2025-10', '2026-10']) {
       await mkdir(join(dataDir, 'invoices', m), { recursive: true })
-      await mkdir(join(dataDir, 'state'), { recursive: true })
       await writeFile(join(dataDir, 'state', `${m}.json`), '{}')
+      await writeFile(join(dataDir, 'logs', `${m}-16.log`), '')
     }
     await pruneRetention(dataDir, new Date('2026-10-20T00:00:00Z'), 12, noopLogger)
     expect((await readdir(join(dataDir, 'invoices'))).sort()).toEqual(['2025-10', '2026-10'])
     expect((await readdir(join(dataDir, 'state'))).sort()).toEqual(['2025-10.json', '2026-10.json'])
+    expect((await readdir(join(dataDir, 'logs'))).sort()).toEqual(['2025-10-16.log', '2026-10-16.log'])
   })
 })
 

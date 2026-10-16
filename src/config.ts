@@ -11,6 +11,7 @@ function parseEnv<T extends z.ZodTypeAny>(schema: T, env: Record<string, string 
 
 const PrinterEnv = z.object({
   PRINTER_QUEUE: z.string().min(1).default('ksef'),
+  PRINTER_URI: z.string().default(''),
   PRINTER_OPTIONS: z.string().default(''),
   PRINT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(300),
   JOB_STATE_TEST: z.string().default('/app/job-state.test'),
@@ -18,6 +19,8 @@ const PrinterEnv = z.object({
 
 export interface PrinterConfig {
   queue: string
+  /** Device URI the queue was created with; empty when the queue is managed outside this app. */
+  uri: string
   options: string[]
   timeoutMs: number
   jobStateTest: string
@@ -27,6 +30,7 @@ export function loadPrinterConfig(env: NodeJS.ProcessEnv = process.env): Printer
   const e = parseEnv(PrinterEnv, env)
   return {
     queue: e.PRINTER_QUEUE,
+    uri: e.PRINTER_URI,
     options: e.PRINTER_OPTIONS.split(/\s+/).filter((o) => o !== ''),
     timeoutMs: e.PRINT_TIMEOUT_SECONDS * 1000,
     jobStateTest: e.JOB_STATE_TEST,

@@ -28,6 +28,7 @@ Run `pnpm lint && pnpm test` before every commit.
 | `src/cli.ts` | Command dispatch; the only module with side effects at import |
 | `src/printer/cups.ts` | Submit jobs with `lp`, poll job state with `ipptool` against the in-container `cupsd` |
 | `src/printer/discover.ts` | mDNS browse for `_ipp`, `_ipps`, `_pdl-datastream` printers (no Avahi daemon) |
+| `src/printer/reachable.ts` | TCP check of `PRINTER_URI` before printing and after a job timeout |
 | `src/printer/suggest.ts` | Pure logic: discovered printer + `lpinfo -m` → `PRINTER_URI`/`PRINTER_MODEL` |
 | `src/run.ts` | Monthly run: query, order, limit, download, render, print with retries, state, notifications, retention |
 | `src/ksef/client.ts` | KSeF API 2.0: token auth, metadata query (paging/truncation), XML download, 429/5xx retry |
@@ -36,6 +37,7 @@ Run `pnpm lint && pnpm test` before every commit.
 | `src/state.ts`, `src/notify.ts` | Per-month state file; ntfy publisher (never fails the run) |
 | `src/fs.ts` | `exists`, `writeFileAtomic` (temp file + rename) for every file a later run reuses |
 | `scripts/seed-test-invoices.ts` | Issues fictitious invoices on the KSeF **test** environment |
+| `src/logger.ts` | Console logger; month runs also append to `data/logs/YYYY-MM-DD.log` |
 | `src/exec.ts` | `run()` wrapper over `execFile`; inject a fake `Run` in tests |
 | `docker/entrypoint.sh` | Starts `cupsd`, creates the `ksef` queue from `PRINTER_*` env, execs the CLI |
 | `docker/job-state.test` | ipptool request used by `cups.ts` |

@@ -90,6 +90,8 @@ interface Session {
 const PAGE_SIZE = 250
 const AUTH_POLLS = 30
 const MAX_ATTEMPTS = 4
+/** Longer waits than this are not worth blocking a run for: fail and let the user run again later. */
+const MAX_RETRY_AFTER_MS = 60_000
 
 export class KsefClient {
   readonly base: string
@@ -136,6 +138,9 @@ export class KsefClient {
       }
       const retryAfter = Number(res.headers.get('Retry-After'))
       const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1000 * 2 ** attempt
+      if (waitMs > MAX_RETRY_AFTER_MS) {
+        throw new KsefError(`${method} ${path} → ${res.status}: KSeF asks to wait ${waitMs / 1000}s; try again later`, res.status)
+      }
       this.logger.warn(`${method} ${path} → ${res.status}, retrying in ${waitMs / 1000}s`)
       await this.sleep(waitMs)
     }

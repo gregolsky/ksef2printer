@@ -21,6 +21,8 @@ export interface RunDeps {
     waitForJob(jobId: string, timeoutMs: number): Promise<{ outcome: JobOutcome; reasons: string }>
     cancel(jobId: string): Promise<void>
   }
+  /** Throws if the printer cannot be reached; checked before printing and after a job times out. */
+  checkPrinter(): Promise<void>
   notifier: Notifier
   logger: Logger
   sleep(ms: number): Promise<void>
@@ -59,7 +61,7 @@ function label(d: Doc): string {
   return `${d.kind === 'purchase' ? 'ZAKUP' : 'SPRZEDAŻ'} ${d.meta.invoiceNumber}${who != null ? ` (${who})` : ''}`
 }
 
-/** Deletes invoice files and print state for months that ended more than `months` months ago. */
+/** Deletes invoice files, print state and run logs for months that ended more than `months` months ago. */
 export async function pruneRetention(dataDir: string, now: Date, months: number, logger: Logger): Promise<void> {
   const cutoff = now.getUTCFullYear() * 12 + now.getUTCMonth() - months
   const old = (name: string) => {
@@ -69,6 +71,7 @@ export async function pruneRetention(dataDir: string, now: Date, months: number,
   for (const [dir, suffix] of [
     [join(dataDir, 'invoices'), ''],
     [join(dataDir, 'state'), '.json'],
+    [join(dataDir, 'logs'), '.log'],
   ] as const) {
     let entries: string[] = []
     try {
@@ -110,7 +113,7 @@ async function preparePdf(d: Doc, dir: string, env: KsefEnv, deps: RunDeps): Pro
   return pdfPath
 }
 
-type Attempt = { ok: true; jobId: string } | { ok: false; error: string; jobId?: string }
+type Attempt = { ok: true; jobId: string } | { ok: false; error: string; jobId?: string; timedOut?: boolean }
 
 /** Submits the PDF once and waits for the job to finish; a job that times out is cancelled. */
 async function printOnce(printer: RunDeps['printer'], pdfPath: string, title: string, timeoutMs: number): Promise<Attempt> {
@@ -120,7 +123,8 @@ async function printOnce(printer: RunDeps['printer'], pdfPath: string, title: st
     const { outcome, reasons } = await printer.waitForJob(jobId, timeoutMs)
     if (outcome === 'completed') return { ok: true, jobId }
     if (outcome === 'timeout') await printer.cancel(jobId)
-    return { ok: false, jobId, error: `job ${jobId} ${outcome}${reasons !== '' ? ` (${reasons})` : ''}` }
+    const error = `job ${jobId} ${outcome}${reasons !== '' ? ` (${reasons})` : ''}`
+    return { ok: false, jobId, error, timedOut: outcome === 'timeout' }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err), ...(jobId != null ? { jobId } : {}) }
   }
@@ -157,10 +161,16 @@ export async function runMonth(opts: RunOptions, deps: RunDeps): Promise<RunSumm
     return summary
   }
 
+  if (selected.length === 0) {
+    log.info(`${key}: nothing to print`)
+    return summary
+  }
+  await deps.checkPrinter()
+
   const dir = join(opts.dataDir, 'invoices', key)
   await mkdir(dir, { recursive: true })
 
-  for (const d of selected) {
+  for (const [i, d] of selected.entries()) {
     const k = d.meta.ksefNumber
     const record = (s: Omit<DocState, 'issueDate' | 'invoiceNumber' | 'updatedAt'>): DocState => ({
       ...s,
@@ -182,9 +192,11 @@ export async function runMonth(opts: RunOptions, deps: RunDeps): Promise<RunSumm
       continue
     }
 
+    log.info(`printing ${i + 1}/${selected.length}: ${label(d)}`)
     const attempts = opts.retryDelaysMs.length + 1
     let last = ''
     let printed = false
+    let timeouts = 0
     let jobId: string | undefined
     for (let attempt = 1; attempt <= attempts; attempt++) {
       const result = await printOnce(deps.printer, pdfPath, d.meta.invoiceNumber, opts.printTimeoutMs)
@@ -198,10 +210,22 @@ export async function runMonth(opts: RunOptions, deps: RunDeps): Promise<RunSumm
       log.warn(`${label(d)}: attempt ${attempt}/${attempts} failed: ${last}`)
       state[k] = record({ status: 'failed', attempts: attempt, error: last, ...(jobId != null ? { jobId } : {}) })
       await saveState(stateFile, state)
+      // A printer that went away would make every remaining invoice wait out its timeouts: stop instead.
+      if (result.timedOut === true) {
+        timeouts++
+        await deps.checkPrinter()
+      }
       const delay = opts.retryDelaysMs[attempt - 1]
       if (delay != null) await deps.sleep(delay)
     }
     await saveState(stateFile, state)
+
+    if (!printed && timeouts === attempts) {
+      throw new Error(
+        `printer stopped responding: ${label(d)} timed out on all ${attempts} attempts; ` +
+          `${summary.printed} printed this run, the rest will print on the next run`,
+      )
+    }
 
     if (printed) {
       summary.printed++

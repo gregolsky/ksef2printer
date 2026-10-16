@@ -158,6 +158,12 @@ describe('KsefClient retries', () => {
     expect(sleeps[0]).toBe(3000)
   })
 
+  it('fails instead of waiting when Retry-After is longer than a minute', async () => {
+    const k = fakeKsef({ 'POST /auth/challenge': () => json({}, 429, { 'Retry-After': '3600' }) })
+    await expect(client(k.fetch).accessToken()).rejects.toThrow('KSeF asks to wait 3600s')
+    expect(sleeps).toEqual([])
+  })
+
   it('retries network errors', async () => {
     const k = fakeKsef()
     let failures = 1

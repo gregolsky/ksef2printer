@@ -1,14 +1,15 @@
 import { access, mkdir, writeFile } from 'node:fs/promises'
-import { basename, dirname } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { loadPrinterConfig, loadRunConfig, type PrinterConfig } from './config.js'
 import { run } from './exec.js'
 import { KsefClient } from './ksef/client.js'
 import { formatMonth, parseMonth } from './ksef/time.js'
-import { consoleLogger as log } from './logger.js'
+import { consoleLogger as log, logToFile } from './logger.js'
 import { noopNotifier, ntfyNotifier } from './notify.js'
 import { renderInvoicePdf } from './pdf/render.js'
 import { CupsPrinter, PrintError } from './printer/cups.js'
+import { assertReachable } from './printer/reachable.js'
 import { browsePrinters, type FoundPrinter } from './printer/discover.js'
 import { parseModels, suggestSettings, toEnv, type PrinterSettings } from './printer/suggest.js'
 import { runMonth } from './run.js'
@@ -167,6 +168,8 @@ async function printMonth(args: readonly string[]): Promise<number> {
 
   const cfg = loadRunConfig()
   const printerCfg = loadPrinterConfig()
+  logToFile(join(cfg.dataDir, 'logs', `${new Date().toISOString().slice(0, 10)}.log`))
+  log.info(`run ${args.join(' ')}`)
   const notifier = cfg.ntfy != null ? ntfyNotifier(cfg.ntfy, log) : noopNotifier
   try {
     const summary = await runMonth(
@@ -183,6 +186,7 @@ async function printMonth(args: readonly string[]): Promise<number> {
         ksef: new KsefClient({ ...cfg.ksef, logger: log }),
         render: (xml, ksefNumber, qr) => renderInvoicePdf(cfg.pdfRenderer, xml, ksefNumber, qr),
         printer: cupsPrinter(printerCfg),
+        checkPrinter: () => assertReachable(printerCfg.uri),
         notifier,
         logger: log,
         sleep: (ms) => new Promise((r) => setTimeout(r, ms)),

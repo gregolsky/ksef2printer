@@ -58,7 +58,7 @@ Reference setup (Brother HL-1210W, host-based printer with no usable IPP):
 2. Query invoice metadata for the month by **issue date**, both as buyer (`ZAKUP`) and seller (`SPRZEDAŻ`), paging until done.
 3. Skip invoices whose state is `printed`.
 4. Download the XML as raw bytes to `data/invoices/YYYY-MM/<ksefNumber>.xml` and render a PDF next to it with [CIRFMF/ksef-pdf-generator](https://github.com/CIRFMF/ksef-pdf-generator). The XML must match the `invoiceHash` from the metadata, or the invoice is marked `failed` and not printed. The QR code (KOD I) uses that hash. A saved XML that no longer matches is downloaded again and its PDF re-rendered. Both files are written atomically, so an interrupted run never leaves a half-written file to be reused.
-5. Print in issue-date order, purchases first, one job per invoice. `--limit N` prints at most N invoices this run; the rest stay for the next run.
+5. Before the first job, check that the printer accepts a TCP connection at `PRINTER_URI` (5 s timeout; non-TCP URIs such as `usb://` are not checked). If it doesn't, stop before downloading anything. Print in issue-date order, purchases first, one job per invoice, logging `printing i/n: …` before each. `--limit N` prints at most N invoices this run; the rest stay for the next run.
 6. Notify through ntfy after each document and once at the end. If the run stops part way (KSeF down, token rejected), send one `high` priority notification with the reason.
 
 ## State
@@ -75,7 +75,9 @@ Reference setup (Brother HL-1210W, host-based printer with no usable IPP):
 
 Up to 4 attempts per document (the first plus one per `RETRY_DELAYS_SECONDS` entry), with 10 s, 30 s and 90 s waits between them. Retries happen on a submit error, a job that ends `aborted`, `canceled` or `stopped`, or a timeout (the job is cancelled first). The queue uses `printer-error-policy=abort-job`, so a failed job never stops the queue. A document still failing after the last attempt is marked `failed` and the run moves on. Over `socket://` a timed-out job may already have printed, so a retry can produce a duplicate. That is preferred to a missing invoice.
 
-KSeF requests are retried up to 4 times on network errors, 429 (honouring `Retry-After`) and 5xx.
+When a job times out, the printer is checked again, and if it is unreachable the run stops at once. If it is reachable but an invoice times out on every attempt, the run also stops. Either way the remaining invoices are left for the next run, and one `run stopped` notification is sent. A printer that is off therefore costs at most one print timeout, not 22 minutes per invoice.
+
+KSeF requests are retried up to 4 times on network errors, 429 and 5xx, waiting 2, 4 and 8 s or what `Retry-After` asks. A `Retry-After` above 60 s fails the run with the reason instead of blocking it.
 
 ## Notifications (ntfy)
 
@@ -84,9 +86,13 @@ KSeF requests are retried up to 4 times on network errors, 429 (honouring `Retry
 - Summary: `2026-10: 14 printed, 1 failed, 3 already printed`, priority `default` or `high` if anything failed.
 - An ntfy failure is logged and never fails the run.
 
+## Logs
+
+The container is removed after each run, so every month run also appends its log to `data/logs/YYYY-MM-DD.log` (UTC date). Tokens never appear in logs.
+
 ## Retention
 
-Each run deletes invoice files whose issue date is more than 1 year ago, along with their state entries. Rerunning such a month downloads and prints it again.
+Each run deletes invoice files whose issue date is more than 1 year ago, along with their state entries and run logs older than a year. Rerunning such a month downloads and prints it again.
 
 ## Delivery order
 
