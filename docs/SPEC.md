@@ -60,7 +60,7 @@ Reference setup (Brother HL-1210W, host-based printer with no usable IPP):
 3. Skip invoices whose state is `printed`.
 4. Download the XML as raw bytes to `data/invoices/YYYY-MM/<ksefNumber>.xml` and render a PDF next to it with [CIRFMF/ksef-pdf-generator](https://github.com/CIRFMF/ksef-pdf-generator). The XML must match the `invoiceHash` from the metadata, or the invoice is marked `failed` and not printed. The QR code (KOD I) uses that hash. A saved XML that no longer matches is downloaded again and its PDF re-rendered. Both files are written atomically, so an interrupted run never leaves a half-written file to be reused.
 5. Before the first job, check that the printer accepts a TCP connection at `PRINTER_URI` (5 s timeout; non-TCP URIs such as `usb://` are not checked). If it doesn't, stop before downloading anything. Print in issue-date order, purchases first, one job per invoice, logging `printing i/n: …` before each. `--limit N` prints at most N invoices this run; the rest stay for the next run.
-6. Notify through ntfy once at the end, with the invoice list. If the run stops part way (KSeF down, token rejected), send one `high` priority notification with the reason.
+6. Notify through ntfy once at the end, with the invoice list. If printing stops part way (printer gone), the same list goes out as a `high` priority `stopped` notification, with the reason and `NOT YET` on the invoices left. If the run stops before the list is known (KSeF down, token rejected), the notification has only the reason.
 
 ## State
 
@@ -76,7 +76,7 @@ Reference setup (Brother HL-1210W, host-based printer with no usable IPP):
 
 Up to 4 attempts per document (the first plus one per `RETRY_DELAYS_SECONDS` entry), with 10 s, 30 s and 90 s waits between them. Retries happen on a submit error, a job that ends `aborted`, `canceled` or `stopped`, or a timeout (the job is cancelled first). The queue uses `printer-error-policy=abort-job`, so a failed job never stops the queue. A document still failing after the last attempt is marked `failed` and the run moves on. Over `socket://` a timed-out job may already have printed, so a retry can produce a duplicate. That is preferred to a missing invoice.
 
-When a job times out, the printer is checked again, and if it is unreachable the run stops at once. If it is reachable but an invoice times out on every attempt, the run also stops. Either way the remaining invoices are left for the next run, and one `run stopped` notification is sent. A printer that is off therefore costs at most one print timeout, not 22 minutes per invoice.
+When a job times out, the printer is checked again, and if it is unreachable the run stops at once. If it is reachable but an invoice times out on every attempt, the run also stops. Either way the remaining invoices are left for the next run, and one `stopped` notification is sent with the month's list. A printer that is off therefore costs at most one print timeout, not 22 minutes per invoice.
 
 KSeF requests are retried up to 4 times on network errors, 429 and 5xx, waiting 2, 4 and 8 s or what `Retry-After` asks. A `Retry-After` above 60 s fails the run with the reason instead of blocking it.
 
@@ -87,7 +87,7 @@ KSeF requests are retried up to 4 times on network errors, 429 and 5xx, waiting 
   The marks are `printed` (in an earlier run), `PRINTED` (this run), `FAILED` (followed by a `↳ reason` line), `WILL PRINT` (dry run), and `later` (beyond `--limit`).
 - Priority is `high` with tag `warning` if anything failed. Otherwise the tag is `white_check_mark`, or `mag` for a dry run.
 - A body over 3800 bytes is split on line boundaries into messages titled `(1/n)`, so ntfy.sh never turns it into an attachment.
-- Run stopped: `✗ ksef2printer 2026-10 stopped` with the reason, priority `high`.
+- Run stopped: `✗ ksef2printer 2026-10 stopped`, priority `high`: the reason, `Run the month again to print the rest.`, the counts with `N not printed yet`, then the list (`[NOT YET   ]` for what is left). When the run stops before the list is known, only the reason.
 - Every message is sent with `Cache: no`. ntfy delivers it to subscribers who are connected (and through push to the phone app), but doesn't keep it, so nobody can fetch the invoice lists from the server later. A phone that was offline for longer than the push service holds messages misses that summary; the log on the Pi still has it.
 - An ntfy failure is logged and never fails the run.
 
@@ -103,7 +103,7 @@ KSeF requests are retried up to 4 times on network errors, 429 and 5xx, waiting 
 
 - Parsing is exact (case and extra spaces aside). Anything else gets an `Unknown command` reply, and message text is never used in a shell or a path. Titled messages are ignored: they are the app's own replies on a shared topic.
 - Each command is confirmed with `▶ <command> started`, then the run sends its summary or `stopped` alert.
-- One run at a time, no queue: a command during a run gets `Busy: … is running`, including while a manual `./print.sh` run holds `data/run.lock`. The lock also stops a manual run from starting during a listener run; that run exits with the error and sends no alert, since nothing ran. A lock older than 6 h is treated as left over from a crash and taken over. Ctrl-C and `docker stop` release it.
+- One run at a time, no queue: a command during a run gets `Busy: … is running`, including while a manual `./print.sh` run holds `data/run.lock`. The lock also stops a manual run from starting during a listener run; that run exits with the error and sends no alert, since nothing ran. The lock records the host's boot id: a lock from before a reboot (power cut mid-run) is stale at once, and one older than 6 h is stale too; a stale lock is taken over. The process releases it on any exit, a crash included.
 - Commands older than 10 minutes (by ntfy's timestamp) are ignored. After a disconnect, the listener reconnects with backoff (5 s up to 60 s) and resumes with `since=<last message id>`. It also reconnects if not even a keepalive arrives for 120 s.
 - While the listener runs, `print.sh` executes commands inside its container, because a second container would start a second CUPS on the same host port.
 - Limits: an `Unknown command` reply goes out at most once a minute, so spam can't use up the ntfy quota the summaries need. A stream line over 64 KB drops the connection, which then reconnects. At startup the listener warns if the topic is shorter than 20 characters and has no token, or if `NTFY_URL` is plain `http://` outside the local network.

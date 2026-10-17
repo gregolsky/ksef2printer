@@ -44,7 +44,7 @@ If earlier runs already created those folders as root, hand them over once: `sud
 
 Purchases print first, then sales, each oldest first. Every printed invoice is remembered in `data/state/`, so running the same month again only prints what is missing. A failed print is retried 3 times. The QR code on each printed invoice carries the hash KSeF holds for it, and an invoice whose downloaded XML doesn't match that hash is not printed. Invoice XML and PDFs are kept in `data/invoices/` for a year, then deleted. Each run's log is saved to `data/logs/` for the same period.
 
-The printer is checked before anything prints. If it is off, or goes away during the run, the run stops with one notification instead of retrying every invoice, and the next run picks up where it stopped.
+The printer is checked before anything prints. If it is off, or goes away during the run, the run stops with one notification (the reason, plus the month's list showing what printed and what didn't) instead of retrying every invoice, and the next run picks up where it stopped.
 
 ## Notifications and commands from your phone (ntfy)
 
@@ -57,7 +57,7 @@ Set `NTFY_TOPIC` in `.env` to get an [ntfy](https://ntfy.sh) notification when a
 [PRINTED   ] 2026-09-02  SPRZEDAŻ FV/1/2026 (Client s.c.)  500.00 PLN  <KSeF number>
 ```
 
-Dry runs send the same list, marked `DRY RUN`. Messages are sent with `Cache: no`, so ntfy delivers them without storing them on its server; the full log stays in `data/logs/`. If a run stops part way, you get an alert with the reason. Long lists are split over several messages.
+Dry runs send the same list, marked `DRY RUN`. Messages are sent with `Cache: no`, so ntfy delivers them without storing them on its server; the full log stays in `data/logs/`. If a run stops part way, the alert carries the reason and the same list, with `NOT YET` on what is left. Long lists are split over several messages.
 
 To start runs from your phone, also run the listener:
 

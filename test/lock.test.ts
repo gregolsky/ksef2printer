@@ -29,14 +29,29 @@ describe('withRunLock', () => {
   })
 
   it('reports a fresh lock as held, and a missing, damaged or stale one as not', async () => {
-    const now = () => Date.parse('2026-10-17T10:00:00Z')
-    expect(await readRunLock(dir, now)).toBeNull()
-    await writeFile(join(dir, 'run.lock'), JSON.stringify({ what: '2026-09', since: '2026-10-17T09:58:00.000Z' }))
-    expect(await readRunLock(dir, now)).toEqual({ what: '2026-09', since: '2026-10-17T09:58:00.000Z' })
-    await writeFile(join(dir, 'run.lock'), JSON.stringify({ what: 'old', since: '2026-10-17T03:00:00Z' }))
-    expect(await readRunLock(dir, now)).toBeNull()
+    const at = { now: () => Date.parse('2026-10-17T10:00:00Z'), bootId: 'boot-b' }
+    expect(await readRunLock(dir, at)).toBeNull()
+    await writeFile(join(dir, 'run.lock'), JSON.stringify({ what: '2026-09', since: '2026-10-17T09:58:00.000Z', bootId: 'boot-b' }))
+    expect(await readRunLock(dir, at)).toEqual({ what: '2026-09', since: '2026-10-17T09:58:00.000Z' })
+    await writeFile(join(dir, 'run.lock'), JSON.stringify({ what: 'old', since: '2026-10-17T03:00:00Z', bootId: 'boot-b' }))
+    expect(await readRunLock(dir, at)).toBeNull()
     await writeFile(join(dir, 'run.lock'), 'not json')
-    expect(await readRunLock(dir, now)).toBeNull()
+    expect(await readRunLock(dir, at)).toBeNull()
+  })
+
+  it('takes over a fresh lock written before a reboot (power cut mid-run)', async () => {
+    await writeFile(join(dir, 'run.lock'), JSON.stringify({ what: '2026-09', since: '2026-10-17T09:58:00.000Z', bootId: 'boot-a' }))
+    const at = { now: () => Date.parse('2026-10-17T10:00:00Z'), bootId: 'boot-b' }
+    expect(await readRunLock(dir, at)).toBeNull()
+    const stale: string[] = []
+    expect(await withRunLock(dir, '2026-10', async () => 'ran', { ...at, onStale: (held) => stale.push(held) })).toBe('ran')
+    expect(stale[0]).toContain('boot-a')
+  })
+
+  it('records the boot id in the lock', async () => {
+    await withRunLock(dir, '2026-10', async () => {
+      expect(JSON.parse(await readFile(join(dir, 'run.lock'), 'utf8'))).toMatchObject({ bootId: 'boot-b' })
+    }, { bootId: 'boot-b' })
   })
 
   it('takes over a lock left by a crash', async () => {
