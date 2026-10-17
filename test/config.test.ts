@@ -17,6 +17,13 @@ describe('loadRunConfig', () => {
   it('treats empty values as unset', () => {
     expect(loadRunConfig({ ...base, NTFY_URL: '', KSEF_ENV: '' })).toMatchObject({ ksef: { env: 'prod' } })
   })
+
+  it('uses ntfy.sh when only NTFY_TOPIC is set', () => {
+    expect(loadRunConfig({ ...base, NTFY_TOPIC: 'x' }).ntfy).toEqual({ url: 'https://ntfy.sh', topic: 'x', commandTopic: 'x' })
+    expect(loadRunConfig({ ...base, NTFY_URL: 'https://ntfy.example.com', NTFY_TOPIC: 'x' }).ntfy?.url).toBe('https://ntfy.example.com')
+    expect(loadRunConfig(base).ntfy).toBeUndefined()
+    expect(() => loadRunConfig({ ...base, NTFY_URL: 'https://ntfy.sh' })).toThrow('NTFY_TOPIC is required')
+  })
 })
 
 describe('ntfyWarnings', () => {

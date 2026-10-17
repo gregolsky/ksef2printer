@@ -221,7 +221,7 @@ async function executeMonth(month: Month, { dryRun, limit }: { dryRun: boolean; 
 async function listenForCommands(): Promise<number> {
   const cfg = loadRunConfig()
   if (cfg.ntfy == null) {
-    log.error('listen needs NTFY_URL and NTFY_TOPIC in .env')
+    log.error('listen needs NTFY_TOPIC in .env')
     return EXIT_CONFIG
   }
   logToDailyFile(cfg.dataDir)

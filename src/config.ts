@@ -64,6 +64,9 @@ export interface RunConfig {
   retryDelaysMs: number[]
 }
 
+/** Used when only `NTFY_TOPIC` is set. */
+export const DEFAULT_NTFY_URL = 'https://ntfy.sh'
+
 export function loadRunConfig(env: NodeJS.ProcessEnv = process.env): RunConfig {
   // Empty values (e.g. `NTFY_URL=` left in .env) count as unset.
   const e = parseEnv(RunEnv, Object.fromEntries(Object.entries(env).filter(([, v]) => v !== '')))
@@ -74,9 +77,9 @@ export function loadRunConfig(env: NodeJS.ProcessEnv = process.env): RunConfig {
     pdfRenderer: e.PDF_RENDERER,
     retryDelaysMs: e.RETRY_DELAYS_SECONDS,
   }
-  if (e.NTFY_URL != null && e.NTFY_TOPIC != null) {
+  if (e.NTFY_TOPIC != null) {
     cfg.ntfy = {
-      url: e.NTFY_URL,
+      url: e.NTFY_URL ?? DEFAULT_NTFY_URL,
       topic: e.NTFY_TOPIC,
       commandTopic: e.NTFY_COMMAND_TOPIC ?? e.NTFY_TOPIC,
       ...(e.NTFY_TOKEN != null ? { token: e.NTFY_TOKEN } : {}),

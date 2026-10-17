@@ -29,8 +29,8 @@ Exit codes: `0` everything printed (or nothing to do), `1` some documents failed
 | `PRINTER_OPTIONS` | no | Space-separated CUPS options, e.g. `PageSize=A4 sides=two-sided-long-edge` |
 | `RETRY_DELAYS_SECONDS` | no | Waits between print attempts (default `10,30,90`) |
 | `PRINT_TIMEOUT_SECONDS` | no | Max wait for one job to finish (default `300`) |
-| `NTFY_URL` | no | ntfy server, e.g. `https://ntfy.sh`; notifications off when unset |
-| `NTFY_TOPIC` | with `NTFY_URL` | ntfy topic |
+| `NTFY_TOPIC` | no | ntfy topic; notifications and the listener are off when unset |
+| `NTFY_URL` | no | ntfy server, default `https://ntfy.sh` |
 | `NTFY_TOKEN` | no | ntfy access token |
 
 ## Printer layer
@@ -59,7 +59,7 @@ Reference setup (Brother HL-1210W, host-based printer with no usable IPP):
 3. Skip invoices whose state is `printed`.
 4. Download the XML as raw bytes to `data/invoices/YYYY-MM/<ksefNumber>.xml` and render a PDF next to it with [CIRFMF/ksef-pdf-generator](https://github.com/CIRFMF/ksef-pdf-generator). The XML must match the `invoiceHash` from the metadata, or the invoice is marked `failed` and not printed. The QR code (KOD I) uses that hash. A saved XML that no longer matches is downloaded again and its PDF re-rendered. Both files are written atomically, so an interrupted run never leaves a half-written file to be reused.
 5. Before the first job, check that the printer accepts a TCP connection at `PRINTER_URI` (5 s timeout; non-TCP URIs such as `usb://` are not checked). If it doesn't, stop before downloading anything. Print in issue-date order, purchases first, one job per invoice, logging `printing i/n: …` before each. `--limit N` prints at most N invoices this run; the rest stay for the next run.
-6. Notify through ntfy after each document and once at the end. If the run stops part way (KSeF down, token rejected), send one `high` priority notification with the reason.
+6. Notify through ntfy once at the end, with the invoice list. If the run stops part way (KSeF down, token rejected), send one `high` priority notification with the reason.
 
 ## State
 

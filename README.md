@@ -39,7 +39,7 @@ The printer is checked before anything prints. If it is off, or goes away during
 
 ## Notifications and commands from your phone (ntfy)
 
-Set `NTFY_URL` and `NTFY_TOPIC` in `.env` to get an [ntfy](https://ntfy.sh) notification when a run finishes. Each one lists every invoice of the month with its status, in the same lines as the log:
+Set `NTFY_TOPIC` in `.env` to get an [ntfy](https://ntfy.sh) notification when a run finishes (on public ntfy.sh; set `NTFY_URL` for another server). Each one lists every invoice of the month with its status, in the same lines as the log:
 
 ```
 2026-09: 2 printed, 0 failed, 1 already printed
