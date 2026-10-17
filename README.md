@@ -48,7 +48,7 @@ Set `NTFY_URL` and `NTFY_TOPIC` in `.env` to get an [ntfy](https://ntfy.sh) noti
 [PRINTED   ] 2026-09-02  SPRZEDAŻ FV/1/2026 (Client s.c.)  500.00 PLN  <KSeF number>
 ```
 
-Dry runs send the same list, marked `DRY RUN`. If a run stops part way, you get an alert with the reason. Long lists are split over several messages.
+Dry runs send the same list, marked `DRY RUN`. Messages are sent with `Cache: no`, so ntfy delivers them without storing them on its server; the full log stays in `data/logs/`. If a run stops part way, you get an alert with the reason. Long lists are split over several messages.
 
 To start runs from your phone, also run the listener:
 

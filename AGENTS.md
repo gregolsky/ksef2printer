@@ -55,5 +55,10 @@ Run `pnpm lint && pnpm test` before every commit.
 - The API contract is the official `open-api.json` in [CIRFMF/ksef-docs](https://github.com/CIRFMF/ksef-docs); check request/response shapes there, not from memory.
 - **mDNS answers are untrusted input.** Any device on the LAN can announce a printer. Host names and addresses must be plain host names and IPv4 addresses, TXT values have control characters stripped, `rp` must be a plain path, and `toEnv` refuses any value with a control character, because a newline would add variables such as `NODE_OPTIONS` to `printer.env`.
 - **ntfy commands are untrusted input.** Only exact matches of the known commands run; never pass message text to a shell or into paths. Replies and summaries always carry a title, which is how the listener skips its own messages on a shared topic.
+- **Supply chain.**
+  - GitHub Actions are pinned to commit SHAs, with the version in a comment. To update one, resolve the new tag's SHA with `git ls-remote`, not by hand.
+  - Dependency install scripts run only for packages in `pnpm.onlyBuiltDependencies` (today just `esbuild`).
+  - Pin new or upgraded dev tools exactly, and prefer releases at least a few weeks old.
+  - Accepted advisory: esbuild 0.27 under tsup (low, build-time dev server only, never run). Review with the next tsup release, or by 2027-01-17.
 - Exit codes: `0` ok, `1` some printing failed or the run stopped part way, `2` configuration error.
 - The KOD I QR code uses `invoiceHash` from KSeF metadata. Keep invoice XML as raw bytes (never `res.text()`), because decoding drops a BOM and changes the hash.

@@ -87,6 +87,7 @@ KSeF requests are retried up to 4 times on network errors, 429 and 5xx, waiting 
 - Priority is `high` with tag `warning` if anything failed. Otherwise the tag is `white_check_mark`, or `mag` for a dry run.
 - A body over 3800 bytes is split on line boundaries into messages titled `(1/n)`, so ntfy.sh never turns it into an attachment.
 - Run stopped: `✗ ksef2printer 2026-10 stopped` with the reason, priority `high`.
+- Every message is sent with `Cache: no`. ntfy delivers it to subscribers who are connected (and through push to the phone app), but doesn't keep it, so nobody can fetch the invoice lists from the server later. A phone that was offline for longer than the push service holds messages misses that summary; the log on the Pi still has it.
 - An ntfy failure is logged and never fails the run.
 
 ## Commands over ntfy

@@ -52,7 +52,13 @@ export function ntfyNotifier(cfg: NtfyConfig, logger: Logger, fetchFn: typeof fe
   const endpoint = `${cfg.url.replace(/\/+$/, '')}/${encodeURIComponent(cfg.topic)}`
   return {
     async send(title, message, opts = {}) {
-      const headers: Record<string, string> = { Title: encodeHeader(title), Priority: opts.priority ?? 'default' }
+      const headers: Record<string, string> = {
+        Title: encodeHeader(title),
+        Priority: opts.priority ?? 'default',
+        // Deliver, but don't keep the message on the server: on public ntfy.sh anyone with the topic
+        // could otherwise fetch the invoice lists for the next 12 hours.
+        Cache: 'no',
+      }
       if (opts.tags != null && opts.tags.length > 0) headers['Tags'] = opts.tags.join(',')
       if (cfg.token != null) headers['Authorization'] = `Bearer ${cfg.token}`
       try {
