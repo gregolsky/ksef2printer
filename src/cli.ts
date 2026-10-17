@@ -4,7 +4,9 @@ import { createInterface } from 'node:readline/promises'
 import { loadPrinterConfig, loadRunConfig, type PrinterConfig } from './config.js'
 import { run } from './exec.js'
 import { KsefClient } from './ksef/client.js'
-import { formatMonth, parseMonth } from './ksef/time.js'
+import { formatMonth, parseMonth, type Month } from './ksef/time.js'
+import { listen } from './listen.js'
+import { releaseLocksSync, withRunLock } from './fs.js'
 import { consoleLogger as log, logToFile } from './logger.js'
 import { noopNotifier, ntfyNotifier } from './notify.js'
 import { renderInvoicePdf } from './pdf/render.js'
@@ -21,7 +23,8 @@ const USAGE = `Usage:
   ksef2printer discover           list printers on the network with suggested settings
   ksef2printer test-page          print a CUPS test page on the configured printer
   ksef2printer print-pdf <file>   print one PDF on the configured printer
-  ksef2printer drivers [query]    list installed printer models (filter by text)`
+  ksef2printer drivers [query]    list installed printer models (filter by text)
+  ksef2printer listen             run "print YYYY-MM" / "dry-run YYYY-MM" sent to the ntfy topic`
 
 const TEST_PAGE = '/usr/share/cups/data/default-testpage.pdf'
 const SETUP_QUEUE = 'ksef-setup-check'
@@ -166,41 +169,78 @@ async function printMonth(args: readonly string[]): Promise<number> {
     }
   }
 
+  return executeMonth(month, { dryRun, ...(limit != null ? { limit } : {}) })
+}
+
+/** One month run, shared by the CLI and ntfy commands: lock, log file, run, summary or "stopped" alert. */
+async function executeMonth(month: Month, { dryRun, limit }: { dryRun: boolean; limit?: number }): Promise<number> {
   const cfg = loadRunConfig()
   const printerCfg = loadPrinterConfig()
+  const what = `${formatMonth(month)}${dryRun ? ' --dry-run' : ''}${limit != null ? ` --limit ${limit}` : ''}`
   logToFile(join(cfg.dataDir, 'logs', `${new Date().toISOString().slice(0, 10)}.log`))
-  log.info(`run ${args.join(' ')}`)
+  log.info(`run ${what}`)
   const notifier = cfg.ntfy != null ? ntfyNotifier(cfg.ntfy, log) : noopNotifier
   try {
-    const summary = await runMonth(
-      {
-        month,
-        env: cfg.ksef.env,
-        dataDir: cfg.dataDir,
-        ...(limit != null ? { limit } : {}),
-        dryRun,
-        printTimeoutMs: printerCfg.timeoutMs,
-        retryDelaysMs: cfg.retryDelaysMs,
-      },
-      {
-        ksef: new KsefClient({ ...cfg.ksef, logger: log }),
-        render: (xml, ksefNumber, qr) => renderInvoicePdf(cfg.pdfRenderer, xml, ksefNumber, qr),
-        printer: cupsPrinter(printerCfg),
-        checkPrinter: () => assertReachable(printerCfg.uri),
-        notifier,
-        logger: log,
-        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-        now: () => new Date(),
-      },
+    const summary = await withRunLock(
+      cfg.dataDir,
+      what,
+      () =>
+        runMonth(
+          {
+            month,
+            env: cfg.ksef.env,
+            dataDir: cfg.dataDir,
+            ...(limit != null ? { limit } : {}),
+            dryRun,
+            printTimeoutMs: printerCfg.timeoutMs,
+            retryDelaysMs: cfg.retryDelaysMs,
+          },
+          {
+            ksef: new KsefClient({ ...cfg.ksef, logger: log }),
+            render: (xml, ksefNumber, qr) => renderInvoicePdf(cfg.pdfRenderer, xml, ksefNumber, qr),
+            printer: cupsPrinter(printerCfg),
+            checkPrinter: () => assertReachable(printerCfg.uri),
+            notifier,
+            logger: log,
+            sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+            now: () => new Date(),
+          },
+        ),
+      { onStale: (held) => log.warn(`taking over a stale run lock: ${held}`) },
     )
     return summary.failed > 0 ? EXIT_FAILED : EXIT_OK
   } catch (err) {
-    // KSeF unreachable, authentication rejected, disk full…: the run stopped part way.
+    // KSeF unreachable, authentication rejected, another run in progress…: the run stopped part way.
     const error = err instanceof Error ? err.message : String(err)
     log.error(error)
-    await notifier.send(`✗ ksef2printer ${formatMonth(month)} stopped`, error, { priority: 'high', tags: ['x'] })
+    await notifier.send(`✗ ksef2printer ${what} stopped`, error, { priority: 'high', tags: ['x'] })
     return EXIT_FAILED
   }
+}
+
+/** Waits for `print YYYY-MM` / `dry-run YYYY-MM` on the ntfy topic and runs them. */
+async function listenForCommands(): Promise<number> {
+  const cfg = loadRunConfig()
+  if (cfg.ntfy == null) {
+    log.error('listen needs NTFY_URL and NTFY_TOPIC in .env')
+    return EXIT_CONFIG
+  }
+  logToFile(join(cfg.dataDir, 'logs', `${new Date().toISOString().slice(0, 10)}.log`))
+  const notifier = ntfyNotifier(cfg.ntfy, log)
+  await listen(
+    { url: cfg.ntfy.url, topic: cfg.ntfy.commandTopic, ...(cfg.ntfy.token != null ? { token: cfg.ntfy.token } : {}) },
+    {
+      fetch,
+      now: Date.now,
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      logger: log,
+      reply: (title, message, opts) => notifier.send(title, message, opts),
+      execute: async (command) => {
+        await executeMonth(command.month, { dryRun: command.kind === 'dry-run' })
+      },
+    },
+  )
+  return EXIT_OK
 }
 
 async function drivers(query: string | undefined): Promise<number> {
@@ -231,10 +271,22 @@ export async function main(argv: readonly string[]): Promise<number> {
       return printPdf(TEST_PAGE)
     case 'drivers':
       return drivers(arg)
+    case 'listen':
+      return listenForCommands()
     default:
       console.log(USAGE)
       return cmd == null || cmd === '--help' || cmd === '-h' ? EXIT_OK : EXIT_CONFIG
   }
+}
+
+// Node runs as PID 1 in the container, where signals have no default handler: without these,
+// Ctrl-C and `docker stop` would be ignored. A held run lock is released before exiting.
+for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]] as const) {
+  process.on(signal, () => {
+    releaseLocksSync()
+    log.warn(`${signal}: stopping`)
+    process.exit(code)
+  })
 }
 
 main(process.argv.slice(2)).then(

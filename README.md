@@ -37,7 +37,36 @@ Purchases print first, then sales, each oldest first. Every printed invoice is r
 
 The printer is checked before anything prints. If it is off, or goes away during the run, the run stops with one notification instead of retrying every invoice, and the next run picks up where it stopped.
 
-Set `NTFY_URL` and `NTFY_TOPIC` in `.env` to get an [ntfy](https://ntfy.sh) notification for every printed or failed invoice, a summary at the end, and an alert if the run stops part way. Notifications include invoice numbers and counterparty names. On the public ntfy.sh server anyone who knows the topic can read them, so use a long random topic, a protected topic with `NTFY_TOKEN`, or your own ntfy server.
+## Notifications and commands from your phone (ntfy)
+
+Set `NTFY_URL` and `NTFY_TOPIC` in `.env` to get an [ntfy](https://ntfy.sh) notification when a run finishes. Each one lists every invoice of the month with its status, in the same lines as the log:
+
+```
+2026-09: 2 printed, 0 failed, 1 already printed
+
+[printed   ] 2026-09-01  ZAKUP FV/3/2026 (Seller sp. z o.o.)  1230.00 PLN  <KSeF number>
+[PRINTED   ] 2026-09-02  SPRZEDAŻ FV/1/2026 (Client s.c.)  500.00 PLN  <KSeF number>
+```
+
+Dry runs send the same list, marked `DRY RUN`. If a run stops part way, you get an alert with the reason. Long lists are split over several messages.
+
+To start runs from your phone, also run the listener:
+
+```sh
+docker compose up -d listener
+```
+
+Then, in the ntfy app, subscribe to your topic and send a message (no title) to it:
+
+| Message | Does |
+|---|---|
+| `dry-run 2026-09` | lists the month, prints nothing |
+| `print 2026-09` | prints what is not printed yet |
+| `help` | lists the commands |
+
+The listener replies `▶ … started`, then sends the summary. Only one run happens at a time; a command sent during a run gets a `Busy` reply. Commands older than 10 minutes are ignored. While the listener runs, `./print.sh` runs inside its container. After changing `.env` or running `setup`, restart it with `docker compose up -d listener`.
+
+**Keep the topic secret.** On the public ntfy.sh server anyone who knows the topic name can read the invoice lists and start printing. Generate it with `openssl rand -hex 16`, use a protected topic with `NTFY_TOKEN`, or run your own ntfy server.
 
 `setup` saves the printer settings to `config/printer.env`, for example:
 
@@ -65,6 +94,7 @@ To add duplex or other options, edit `PRINTER_OPTIONS` (space-separated CUPS opt
 | `./print.sh test-page` | Print a test page on the configured printer |
 | `./print.sh print-pdf data/file.pdf` | Print one PDF (paths are inside `./data`) |
 | `./print.sh drivers <text>` | Search installed drivers, e.g. `drivers canon` |
+| `docker compose up -d listener` | Accept `print` / `dry-run` commands over ntfy |
 
 ## If your printer is not found or does not print
 

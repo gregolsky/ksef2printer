@@ -6,8 +6,43 @@ export interface NtfyConfig {
   token?: string
 }
 
+export interface NotifyOptions {
+  priority?: 'default' | 'high'
+  tags?: string[]
+}
+
 export interface Notifier {
-  send(title: string, message: string, opts?: { priority?: 'default' | 'high'; tags?: string[] }): Promise<void>
+  send(title: string, message: string, opts?: NotifyOptions): Promise<void>
+}
+
+/** ntfy.sh turns messages over 4096 bytes into attachments; stay under it with room for encoding. */
+export const MAX_MESSAGE_BYTES = 3800
+
+/** Groups lines into messages of at most `maxBytes` (UTF-8); a single longer line is cut. */
+export function splitMessage(lines: readonly string[], maxBytes = MAX_MESSAGE_BYTES): string[] {
+  const parts: string[] = []
+  let cur = ''
+  for (const raw of lines) {
+    let line = raw
+    while (Buffer.byteLength(line) > maxBytes) line = line.slice(0, -1)
+    const next = cur === '' ? line : `${cur}\n${line}`
+    if (cur !== '' && Buffer.byteLength(next) > maxBytes) {
+      parts.push(cur)
+      cur = line
+    } else {
+      cur = next
+    }
+  }
+  if (cur !== '' || parts.length === 0) parts.push(cur)
+  return parts
+}
+
+/** Sends `lines` as one message, or as several titled "(1/3)", "(2/3)"… when too long for one. */
+export async function sendLong(notifier: Notifier, title: string, lines: readonly string[], opts?: NotifyOptions): Promise<void> {
+  const parts = splitMessage(lines)
+  for (const [i, part] of parts.entries()) {
+    await notifier.send(parts.length > 1 ? `${title} (${i + 1}/${parts.length})` : title, part, opts)
+  }
 }
 
 export const noopNotifier: Notifier = { send: async () => {} }

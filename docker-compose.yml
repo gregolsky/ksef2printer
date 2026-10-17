@@ -1,15 +1,26 @@
+x-common: &common
+  image: ghcr.io/gregolsky/ksef2printer:latest
+  # Host networking lets the container see printers announced over mDNS (*.local).
+  network_mode: host
+  env_file:
+    - path: .env
+      required: false
+    # Written by `./print.sh setup`.
+    - path: config/printer.env
+      required: false
+  volumes:
+    - ./data:/data
+    - ./config:/config
+
 services:
+  # One-off commands: ./print.sh <command>
   ksef2printer:
-    image: ghcr.io/gregolsky/ksef2printer:latest
+    <<: *common
     build: .
-    # Host networking lets the container see printers announced over mDNS (*.local).
-    network_mode: host
-    env_file:
-      - path: .env
-        required: false
-      # Written by `./print.sh setup`.
-      - path: config/printer.env
-        required: false
-    volumes:
-      - ./data:/data
-      - ./config:/config
+
+  # Optional: runs "print YYYY-MM" / "dry-run YYYY-MM" sent to the ntfy topic.
+  # Start with: docker compose up -d listener
+  listener:
+    <<: *common
+    command: listen
+    restart: unless-stopped

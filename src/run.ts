@@ -6,7 +6,7 @@ import type { InvoiceMetadata, KsefEnv, SubjectType } from './ksef/client.js'
 import { invoiceQrUrl } from './ksef/qr.js'
 import { formatMonth, monthBounds, type Month } from './ksef/time.js'
 import type { Logger } from './logger.js'
-import type { Notifier } from './notify.js'
+import { sendLong, type Notifier, type NotifyOptions } from './notify.js'
 import type { JobOutcome } from './printer/cups.js'
 import { loadState, saveState, type DocState } from './state.js'
 
@@ -47,6 +47,8 @@ export interface RunSummary {
   failed: number
   alreadyPrinted: number
   left: number
+  /** One line per invoice of the month, as logged and sent in the summary notification. */
+  lines: string[]
 }
 
 type Kind = 'purchase' | 'sale'
@@ -59,6 +61,14 @@ interface Doc {
 function label(d: Doc): string {
   const who = d.kind === 'purchase' ? d.meta.seller.name : d.meta.buyer.name
   return `${d.kind === 'purchase' ? 'ZAKUP' : 'SPRZEDAŻ'} ${d.meta.invoiceNumber}${who != null ? ` (${who})` : ''}`
+}
+
+type Mark = 'printed' | 'WILL PRINT' | 'later' | 'PRINTED' | 'FAILED'
+
+/** `[WILL PRINT] 2026-09-05  SPRZEDAŻ FV/7/2026 (Client s.c.)  500.00 PLN  <KSeF number>` */
+export function invoiceLine(d: Doc, mark: Mark): string {
+  const { issueDate, grossAmount, currency, ksefNumber } = d.meta
+  return `[${mark.padEnd(10)}] ${issueDate.slice(0, 10)}  ${label(d)}  ${grossAmount.toFixed(2)} ${currency}  ${ksefNumber}`
 }
 
 /** Deletes invoice files, print state and run logs for months that ended more than `months` months ago. */
@@ -149,26 +159,28 @@ export async function runMonth(opts: RunOptions, deps: RunDeps): Promise<RunSumm
   const state = await loadState(stateFile)
   const todo = docs.filter((d) => state[d.meta.ksefNumber]?.status !== 'printed')
   const selected = opts.limit != null ? todo.slice(0, opts.limit) : todo
-  const summary: RunSummary = { printed: 0, failed: 0, alreadyPrinted: docs.length - todo.length, left: todo.length - selected.length }
+  const summary: RunSummary = { printed: 0, failed: 0, alreadyPrinted: docs.length - todo.length, left: todo.length - selected.length, lines: [] }
 
   log.info(`${key}: ${purchases.length} purchases, ${sales.length} sales, ${summary.alreadyPrinted} already printed, ${selected.length} to print`)
 
+  // Marks before this run; the print loop replaces them with PRINTED / FAILED.
+  const marks = new Map<Doc, Mark>()
+  const reasons = new Map<Doc, string>()
+  for (const d of docs) {
+    marks.set(d, state[d.meta.ksefNumber]?.status === 'printed' ? 'printed' : selected.includes(d) ? 'WILL PRINT' : 'later')
+  }
+
   if (opts.dryRun) {
-    for (const d of docs) {
-      const mark = state[d.meta.ksefNumber]?.status === 'printed' ? 'printed ' : selected.includes(d) ? 'WILL PRINT' : 'later   '
-      console.log(`  [${mark}] ${d.meta.issueDate.slice(0, 10)}  ${label(d)}  ${d.meta.grossAmount} ${d.meta.currency}  ${d.meta.ksefNumber}`)
-    }
+    summary.lines = docs.map((d) => invoiceLine(d, marks.get(d)!))
+    for (const line of summary.lines) log.info(line)
+    await notifySummary(key, summary, { dryRun: true, toPrint: selected.length }, deps)
     return summary
   }
 
-  if (selected.length === 0) {
-    log.info(`${key}: nothing to print`)
-    return summary
-  }
-  await deps.checkPrinter()
+  if (selected.length > 0) await deps.checkPrinter()
 
   const dir = join(opts.dataDir, 'invoices', key)
-  await mkdir(dir, { recursive: true })
+  if (selected.length > 0) await mkdir(dir, { recursive: true })
 
   for (const [i, d] of selected.entries()) {
     const k = d.meta.ksefNumber
@@ -187,8 +199,9 @@ export async function runMonth(opts: RunOptions, deps: RunDeps): Promise<RunSumm
       state[k] = record({ status: 'failed', attempts: 0, error })
       await saveState(stateFile, state)
       summary.failed++
-      log.error(`${label(d)}: ${error}`)
-      await deps.notifier.send(`✗ ${label(d)}`, error, { priority: 'high', tags: ['x'] })
+      marks.set(d, 'FAILED')
+      reasons.set(d, error)
+      log.error(`${invoiceLine(d, 'FAILED')}: ${error}`)
       continue
     }
 
@@ -229,21 +242,42 @@ export async function runMonth(opts: RunOptions, deps: RunDeps): Promise<RunSumm
 
     if (printed) {
       summary.printed++
-      log.info(`printed ${label(d)}`)
-      await deps.notifier.send(`✓ Wydrukowano ${d.meta.invoiceNumber}`, label(d), { tags: ['printer'] })
+      marks.set(d, 'PRINTED')
+      log.info(invoiceLine(d, 'PRINTED'))
     } else {
       summary.failed++
-      log.error(`${label(d)}: not printed after ${attempts} attempts: ${last}`)
-      await deps.notifier.send(`✗ Nie wydrukowano ${d.meta.invoiceNumber}`, `${label(d)}\n${attempts} attempts: ${last}`, {
-        priority: 'high',
-        tags: ['x'],
-      })
+      marks.set(d, 'FAILED')
+      reasons.set(d, `not printed after ${attempts} attempts: ${last}`)
+      log.error(`${invoiceLine(d, 'FAILED')}: not printed after ${attempts} attempts: ${last}`)
     }
   }
 
-  const text = `${key}: ${summary.printed} printed, ${summary.failed} failed, ${summary.alreadyPrinted} already printed` +
-    (summary.left > 0 ? `, ${summary.left} left (limit)` : '')
-  log.info(text)
-  await deps.notifier.send(`ksef2printer ${key}`, text, summary.failed > 0 ? { priority: 'high', tags: ['warning'] } : { tags: ['white_check_mark'] })
+  summary.lines = docs.flatMap((d) => {
+    const reason = reasons.get(d)
+    return reason != null ? [invoiceLine(d, marks.get(d)!), `    ↳ ${reason}`] : [invoiceLine(d, marks.get(d)!)]
+  })
+  await notifySummary(key, summary, { dryRun: false, toPrint: selected.length }, deps)
   return summary
+}
+
+/** Logs the counts and sends one notification listing every invoice of the month. */
+async function notifySummary(
+  key: string,
+  summary: RunSummary,
+  { dryRun, toPrint }: { dryRun: boolean; toPrint: number },
+  deps: RunDeps,
+): Promise<void> {
+  const left = summary.left > 0 ? `, ${summary.left} left for a later run (limit)` : ''
+  const counts = dryRun
+    ? `${key}: ${toPrint} would print, ${summary.alreadyPrinted} already printed${left}`
+    : `${key}: ${summary.printed} printed, ${summary.failed} failed, ${summary.alreadyPrinted} already printed${left}`
+  deps.logger.info(counts)
+  const header = dryRun ? ['Dry run: nothing was printed.', counts] : [counts]
+  const body = summary.lines.length > 0 ? [...header, '', ...summary.lines] : [...header, 'No invoices in KSeF for this month.']
+  const opts: NotifyOptions = dryRun
+    ? { tags: ['mag'] }
+    : summary.failed > 0
+      ? { priority: 'high', tags: ['warning'] }
+      : { tags: ['white_check_mark'] }
+  await sendLong(deps.notifier, `ksef2printer ${key}${dryRun ? ' — DRY RUN' : ''}`, body, opts)
 }

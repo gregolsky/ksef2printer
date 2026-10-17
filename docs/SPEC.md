@@ -81,10 +81,30 @@ KSeF requests are retried up to 4 times on network errors, 429 and 5xx, waiting 
 
 ## Notifications (ntfy)
 
-- Per document: `✓ Wydrukowano FV/123/2026` with the counterparty, or `✗ Nie wydrukowano FV/123/2026` with the reason, priority `high`.
+- **One summary per run**, real or dry, and no per-invoice messages. Title `ksef2printer 2026-10`, or `ksef2printer 2026-10 — DRY RUN`. The body is the counts line (`2026-10: 14 printed, 1 failed, 3 already printed`; dry run: `Dry run: nothing was printed.` then `… would print …`), then one line per invoice of the month, the same lines that go to the log:
+  `[MARK      ] <issue date>  ZAKUP|SPRZEDAŻ <number> (<counterparty>)  <gross> <currency>  <KSeF number>`
+  The marks are `printed` (in an earlier run), `PRINTED` (this run), `FAILED` (followed by a `↳ reason` line), `WILL PRINT` (dry run), and `later` (beyond `--limit`).
+- Priority is `high` with tag `warning` if anything failed. Otherwise the tag is `white_check_mark`, or `mag` for a dry run.
+- A body over 3800 bytes is split on line boundaries into messages titled `(1/n)`, so ntfy.sh never turns it into an attachment.
 - Run stopped: `✗ ksef2printer 2026-10 stopped` with the reason, priority `high`.
-- Summary: `2026-10: 14 printed, 1 failed, 3 already printed`, priority `default` or `high` if anything failed.
 - An ntfy failure is logged and never fails the run.
+
+## Commands over ntfy
+
+`docker compose up -d listener` runs `listen`. It subscribes to `NTFY_COMMAND_TOPIC` (default `NTFY_TOPIC`) via the ntfy JSON stream and accepts messages without a title:
+
+| Message | Action |
+|---|---|
+| `dry-run YYYY-MM` | the month run with `--dry-run` |
+| `print YYYY-MM` | the month run |
+| `help` | replies with the command list |
+
+- Parsing is exact (case and extra spaces aside). Anything else gets an `Unknown command` reply, and message text is never used in a shell or a path. Titled messages are ignored: they are the app's own replies on a shared topic.
+- Each command is confirmed with `▶ <command> started`, then the run sends its summary or `stopped` alert.
+- One run at a time: a command during a run gets `Busy: … is running`. `data/run.lock` also stops a manual `./print.sh` run and a listener run from overlapping. A lock older than 6 h is treated as left over from a crash and taken over. Ctrl-C and `docker stop` release it.
+- Commands older than 10 minutes (by ntfy's timestamp) are ignored. After a disconnect, the listener reconnects with backoff (5 s up to 60 s) and resumes with `since=<last message id>`. It also reconnects if not even a keepalive arrives for 120 s.
+- While the listener runs, `print.sh` executes commands inside its container, because a second container would start a second CUPS on the same host port.
+- Security rests on the topic: on public ntfy.sh anyone who knows it can read the lists and start printing. Use a long random topic, or `NTFY_TOKEN` with a protected topic or your own server.
 
 ## Logs
 

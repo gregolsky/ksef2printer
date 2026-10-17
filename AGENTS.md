@@ -34,8 +34,9 @@ Run `pnpm lint && pnpm test` before every commit.
 | `src/ksef/client.ts` | KSeF API 2.0: token auth, metadata query (paging/truncation), XML download, 429/5xx retry |
 | `src/ksef/qr.ts`, `src/ksef/time.ts` | KOD I verification link; Europe/Warsaw month bounds |
 | `src/pdf/render.ts` | Loads the vendored ksef-pdf-generator build and renders XML → PDF |
-| `src/state.ts`, `src/notify.ts` | Per-month state file; ntfy publisher (never fails the run) |
-| `src/fs.ts` | `exists`, `writeFileAtomic` (temp file + rename) for every file a later run reuses |
+| `src/state.ts`, `src/notify.ts` | Per-month state file; ntfy publisher (never fails the run), `sendLong` splits long lists |
+| `src/listen.ts` | ntfy command listener: strict parser, one run at a time, reconnect with `since=` |
+| `src/fs.ts` | `exists`, `writeFileAtomic` (temp file + rename); `withRunLock` (`data/run.lock`) so two runs never overlap |
 | `scripts/seed-test-invoices.ts` | Issues fictitious invoices on the KSeF **test** environment |
 | `src/logger.ts` | Console logger; month runs also append to `data/logs/YYYY-MM-DD.log` |
 | `src/exec.ts` | `run()` wrapper over `execFile`; inject a fake `Run` in tests |
@@ -52,5 +53,6 @@ Run `pnpm lint && pnpm test` before every commit.
 - **Style:** TypeScript strict mode with `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess`; ESM with `.js` import suffixes; zod for env parsing; no new runtime dependencies without a reason.
 - **KSeF environments.** Develop against `KSEF_ENV=test` with random NIPs and fictitious data. Never run seed or write operations against `prod` or `demo`.
 - The API contract is the official `open-api.json` in [CIRFMF/ksef-docs](https://github.com/CIRFMF/ksef-docs); check request/response shapes there, not from memory.
+- **ntfy commands are untrusted input.** Only exact matches of the known commands run; never pass message text to a shell or into paths. Replies and summaries always carry a title, which is how the listener skips its own messages on a shared topic.
 - Exit codes: `0` ok, `1` some printing failed or the run stopped part way, `2` configuration error.
 - The KOD I QR code uses `invoiceHash` from KSeF metadata. Keep invoice XML as raw bytes (never `res.text()`), because decoding drops a BOM and changes the hash.

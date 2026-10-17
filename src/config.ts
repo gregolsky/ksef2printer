@@ -45,6 +45,7 @@ const RunEnv = z.object({
   PDF_RENDERER: z.string().default('/app/vendor/ksef-pdf.js'),
   NTFY_URL: z.string().url().optional(),
   NTFY_TOPIC: z.string().min(1).optional(),
+  NTFY_COMMAND_TOPIC: z.string().min(1).optional(),
   NTFY_TOKEN: z.string().min(1).optional(),
   RETRY_DELAYS_SECONDS: z
     .string()
@@ -58,7 +59,8 @@ export interface RunConfig {
   ksef: { token: string; nip: string; env: 'prod' | 'demo' | 'test' }
   dataDir: string
   pdfRenderer: string
-  ntfy?: { url: string; topic: string; token?: string }
+  /** `commandTopic` is where `listen` reads commands; it defaults to `topic`. */
+  ntfy?: { url: string; topic: string; commandTopic: string; token?: string }
   retryDelaysMs: number[]
 }
 
@@ -73,7 +75,12 @@ export function loadRunConfig(env: NodeJS.ProcessEnv = process.env): RunConfig {
     retryDelaysMs: e.RETRY_DELAYS_SECONDS,
   }
   if (e.NTFY_URL != null && e.NTFY_TOPIC != null) {
-    cfg.ntfy = { url: e.NTFY_URL, topic: e.NTFY_TOPIC, ...(e.NTFY_TOKEN != null ? { token: e.NTFY_TOKEN } : {}) }
+    cfg.ntfy = {
+      url: e.NTFY_URL,
+      topic: e.NTFY_TOPIC,
+      commandTopic: e.NTFY_COMMAND_TOPIC ?? e.NTFY_TOPIC,
+      ...(e.NTFY_TOKEN != null ? { token: e.NTFY_TOKEN } : {}),
+    }
   }
   return cfg
 }

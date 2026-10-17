@@ -33,13 +33,14 @@ interface Fake {
   rendered: string[]
   submitted: string[]
   notes: string[]
+  bodies: string[]
   outcomes: JobOutcome[]
   printerChecks: number
   printerUp: boolean
 }
 
 function fake(invoices: Partial<Record<SubjectType, InvoiceMetadata[]>>): Fake {
-  const f: Fake = { downloads: [], rendered: [], submitted: [], notes: [], outcomes: [], printerChecks: 0, printerUp: true, deps: undefined as unknown as RunDeps }
+  const f: Fake = { downloads: [], rendered: [], submitted: [], notes: [], bodies: [], outcomes: [], printerChecks: 0, printerUp: true, deps: undefined as unknown as RunDeps }
   let job = 0
   f.deps = {
     ksef: {
@@ -65,7 +66,12 @@ function fake(invoices: Partial<Record<SubjectType, InvoiceMetadata[]>>): Fake {
       f.printerChecks++
       if (!f.printerUp) throw new Error('printer not reachable at 192.168.1.50:9100')
     },
-    notifier: { send: async (title) => void f.notes.push(title) },
+    notifier: {
+      send: async (title, body) => {
+        f.notes.push(title)
+        f.bodies.push(body)
+      },
+    },
     logger: noopLogger,
     sleep: async () => {},
     now: () => new Date('2026-10-20T10:00:00Z'),
@@ -85,7 +91,7 @@ describe('runMonth', () => {
   it('prints only `limit` invoices, purchases first, oldest first', async () => {
     const f = fake({ Subject1: [meta(1, '2026-10-02')], Subject2: [meta(3, '2026-10-09', '3333333333'), meta(2, '2026-10-05', '3333333333')] })
     const summary = await runMonth({ ...opts, limit: 1 }, f.deps)
-    expect(summary).toEqual({ printed: 1, failed: 0, alreadyPrinted: 0, left: 2 })
+    expect(summary).toMatchObject({ printed: 1, failed: 0, alreadyPrinted: 0, left: 2 })
     expect(f.submitted).toEqual([join(dataDir, 'invoices', '2026-10', '3333333333-20261015-2.pdf')])
   })
 
@@ -122,15 +128,47 @@ describe('runMonth', () => {
     expect(f.submitted).toHaveLength(4)
     const state = JSON.parse(await readFile(join(dataDir, 'state', '2026-10.json'), 'utf8'))
     expect(state['1111111111-20261015-1']).toMatchObject({ status: 'failed', attempts: 3 })
-    expect(f.notes.some((n) => n.startsWith('✗'))).toBe(true)
+    expect(f.notes).toEqual(['ksef2printer 2026-10'])
+    expect(f.bodies[0]).toContain('1 printed, 1 failed')
+    expect(f.bodies[0]).toMatch(/\[FAILED {4}\] 2026-10-02 {2}SPRZEDAŻ FV\/1 \(Buyer 1\) {2}101\.00 PLN {2}1111111111-20261015-1\n {4}↳ not printed after 3 attempts: job ksef-3 aborted/)
+    expect(f.bodies[0]).toContain('[PRINTED   ] 2026-10-03  SPRZEDAŻ FV/2 (Buyer 2)')
   })
 
-  it('prints nothing on a dry run', async () => {
-    const f = fake({ Subject1: [meta(1, '2026-10-02')] })
+  it('prints nothing on a dry run and sends the list marked as a dry run', async () => {
+    const f = fake({ Subject1: [meta(1, '2026-10-02'), meta(2, '2026-10-03')] })
     const summary = await runMonth({ ...opts, dryRun: true, limit: 1 }, f.deps)
-    expect(summary).toMatchObject({ printed: 0, left: 0 })
+    expect(summary).toMatchObject({ printed: 0, left: 1 })
     expect(f.submitted).toEqual([])
-    expect(f.notes).toEqual([])
+    expect(f.downloads).toEqual([])
+    expect(f.printerChecks).toBe(0)
+    expect(f.notes).toEqual(['ksef2printer 2026-10 — DRY RUN'])
+    expect(f.bodies[0]!.split('\n').slice(0, 4)).toEqual([
+      'Dry run: nothing was printed.',
+      '2026-10: 1 would print, 0 already printed, 1 left for a later run (limit)',
+      '',
+      '[WILL PRINT] 2026-10-02  SPRZEDAŻ FV/1 (Buyer 1)  101.00 PLN  1111111111-20261015-1',
+    ])
+    expect(f.bodies[0]).toContain('[later     ] 2026-10-03')
+  })
+
+  it('sends one summary listing every invoice, and none per invoice', async () => {
+    const invoices = { Subject1: [meta(1, '2026-10-02'), meta(2, '2026-10-03')], Subject2: [meta(3, '2026-10-01', '3333333333')] }
+    await runMonth({ ...opts, limit: 1 }, fake(invoices).deps)
+    const f = fake(invoices)
+    const summary = await runMonth(opts, f.deps)
+    expect(f.notes).toEqual(['ksef2printer 2026-10'])
+    expect(summary.lines).toEqual([
+      '[printed   ] 2026-10-01  ZAKUP FV/3 (Seller 3)  103.00 PLN  3333333333-20261015-3',
+      '[PRINTED   ] 2026-10-02  SPRZEDAŻ FV/1 (Buyer 1)  101.00 PLN  1111111111-20261015-1',
+      '[PRINTED   ] 2026-10-03  SPRZEDAŻ FV/2 (Buyer 2)  102.00 PLN  1111111111-20261015-2',
+    ])
+    expect(f.bodies[0]).toBe(['2026-10: 2 printed, 0 failed, 1 already printed', '', ...summary.lines].join('\n'))
+  })
+
+  it('still reports when the month has nothing to print', async () => {
+    const f = fake({})
+    await runMonth(opts, f.deps)
+    expect(f.bodies).toEqual(['2026-10: 0 printed, 0 failed, 0 already printed\nNo invoices in KSeF for this month.'])
   })
 
   it('keeps the XML byte for byte and puts the KSeF hash in the QR code', async () => {
