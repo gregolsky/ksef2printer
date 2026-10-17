@@ -32,6 +32,7 @@ Exit codes: `0` everything printed (or nothing to do), `1` some documents failed
 | `NTFY_TOPIC` | no | ntfy topic; notifications and the listener are off when unset |
 | `NTFY_URL` | no | ntfy server, default `https://ntfy.sh` |
 | `NTFY_TOKEN` | no | ntfy access token |
+| `PUID`, `PGID` | no | Run the app as this host user and group (CUPS stays root), so `data/` and `config/` belong to that user. `PGID` defaults to `PUID` |
 
 ## Printer layer
 
@@ -102,7 +103,7 @@ KSeF requests are retried up to 4 times on network errors, 429 and 5xx, waiting 
 
 - Parsing is exact (case and extra spaces aside). Anything else gets an `Unknown command` reply, and message text is never used in a shell or a path. Titled messages are ignored: they are the app's own replies on a shared topic.
 - Each command is confirmed with `▶ <command> started`, then the run sends its summary or `stopped` alert.
-- One run at a time: a command during a run gets `Busy: … is running`. `data/run.lock` also stops a manual `./print.sh` run and a listener run from overlapping. A lock older than 6 h is treated as left over from a crash and taken over. Ctrl-C and `docker stop` release it.
+- One run at a time, no queue: a command during a run gets `Busy: … is running`, including while a manual `./print.sh` run holds `data/run.lock`. The lock also stops a manual run from starting during a listener run; that run exits with the error and sends no alert, since nothing ran. A lock older than 6 h is treated as left over from a crash and taken over. Ctrl-C and `docker stop` release it.
 - Commands older than 10 minutes (by ntfy's timestamp) are ignored. After a disconnect, the listener reconnects with backoff (5 s up to 60 s) and resumes with `since=<last message id>`. It also reconnects if not even a keepalive arrives for 120 s.
 - While the listener runs, `print.sh` executes commands inside its container, because a second container would start a second CUPS on the same host port.
 - Limits: an `Unknown command` reply goes out at most once a minute, so spam can't use up the ntfy quota the summaries need. A stream line over 64 KB drops the connection, which then reconnects. At startup the listener warns if the topic is shorter than 20 characters and has no token, or if `NTFY_URL` is plain `http://` outside the local network.
@@ -110,7 +111,7 @@ KSeF requests are retried up to 4 times on network errors, 429 and 5xx, waiting 
 
 ## Logs
 
-The container is removed after each run, so every month run also appends its log to `data/logs/YYYY-MM-DD.log` (UTC date). Tokens never appear in logs.
+The container is removed after each run, so month runs and the listener also append their log to `data/logs/YYYY-MM-DD.log`. Each line goes to the file of its own UTC date, so a listener running for weeks still writes one file per day. Tokens never appear in logs.
 
 ## Retention
 

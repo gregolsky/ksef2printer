@@ -36,6 +36,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/ksef2printer.sh /usr/local/bin/ksef2printer
 COPY docker/job-state.test /app/job-state.test
 COPY --from=build /build/dist/cli.js /app/cli.js
 COPY --from=pdf-renderer /src/dist/ksef-fe-invoice-converter.js /app/vendor/ksef-pdf.js

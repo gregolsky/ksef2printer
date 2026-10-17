@@ -36,11 +36,12 @@ Run `pnpm lint && pnpm test` before every commit.
 | `src/pdf/render.ts` | Loads the vendored ksef-pdf-generator build and renders XML → PDF |
 | `src/state.ts`, `src/notify.ts` | Per-month state file; ntfy publisher (never fails the run), `sendLong` splits long lists |
 | `src/listen.ts` | ntfy command listener: strict parser, one run at a time, reconnect with `since=` |
-| `src/fs.ts` | `exists`, `writeFileAtomic` (temp file + rename); `withRunLock` (`data/run.lock`) so two runs never overlap |
+| `src/fs.ts` | `exists`, `writeFileAtomic` (temp file + rename); `withRunLock` / `readRunLock` (`data/run.lock`) so two runs never overlap |
 | `scripts/seed-test-invoices.ts` | Issues fictitious invoices on the KSeF **test** environment |
-| `src/logger.ts` | Console logger; month runs also append to `data/logs/YYYY-MM-DD.log` |
+| `src/logger.ts` | Console logger; month runs and the listener also append to `data/logs/YYYY-MM-DD.log`, picked per line |
 | `src/exec.ts` | `run()` wrapper over `execFile`; inject a fake `Run` in tests |
-| `docker/entrypoint.sh` | Starts `cupsd`, creates the `ksef` queue from `PRINTER_*` env, execs the CLI |
+| `docker/entrypoint.sh` | Starts `cupsd`, creates the `ksef` queue from `PRINTER_*` env, execs `ksef2printer` |
+| `docker/ksef2printer.sh` | Runs the CLI, dropping to `PUID`/`PGID` with `setpriv` when set; `print.sh` uses it for `exec` into the listener |
 | `docker/job-state.test` | ipptool request used by `cups.ts` |
 
 ## Rules

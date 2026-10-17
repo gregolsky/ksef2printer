@@ -23,4 +23,4 @@ if [ -n "${PRINTER_URI:-}" ]; then
   fi
 fi
 
-exec node /app/cli.js "$@"
+exec /usr/local/bin/ksef2printer "$@"

@@ -25,6 +25,15 @@ KSEF_TOKEN=...
 KSEF_NIP=1234567890
 ```
 
+To have files in `data/` and `config/` owned by you rather than root, also add your ids (`id -u`, `id -g`):
+
+```sh
+PUID=1000
+PGID=1000
+```
+
+If earlier runs already created those folders as root, hand them over once: `sudo chown -R "$(id -u):$(id -g)" data config`.
+
 ## Printing a month
 
 ```sh
@@ -64,7 +73,7 @@ Then, in the ntfy app, subscribe to your topic and send a message (no title) to 
 | `print 2026-09` | prints what is not printed yet |
 | `help` | lists the commands |
 
-The listener replies `▶ … started`, then sends the summary. Only one run happens at a time; a command sent during a run gets a `Busy` reply. Commands older than 10 minutes are ignored. While the listener runs, `./print.sh` runs inside its container. After changing `.env` or running `setup`, restart it with `docker compose up -d listener`.
+The listener replies `▶ … started`, then sends the summary. Only one run happens at a time; a command sent during a run (including one started with `./print.sh`) gets a `Busy` reply, and isn't queued: send it again afterwards. Commands older than 10 minutes are ignored. While the listener runs, `./print.sh` runs inside its container. After changing `.env` or running `setup`, restart it with `docker compose up -d listener`.
 
 **Keep the topic secret.** On the public ntfy.sh server anyone who knows the topic name can read the invoice lists and start printing. Generate it with `openssl rand -hex 16`, use a protected topic with `NTFY_TOKEN`, or run your own ntfy server.
 
