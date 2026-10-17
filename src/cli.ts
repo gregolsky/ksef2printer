@@ -1,7 +1,7 @@
 import { access, mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
-import { loadPrinterConfig, loadRunConfig, type PrinterConfig } from './config.js'
+import { loadPrinterConfig, loadRunConfig, ntfyWarnings, type PrinterConfig } from './config.js'
 import { run } from './exec.js'
 import { KsefClient } from './ksef/client.js'
 import { formatMonth, parseMonth, type Month } from './ksef/time.js'
@@ -225,6 +225,7 @@ async function listenForCommands(): Promise<number> {
     return EXIT_CONFIG
   }
   logToDailyFile(cfg.dataDir)
+  for (const w of ntfyWarnings(cfg.ntfy)) log.warn(w)
   const notifier = ntfyNotifier(cfg.ntfy, log)
   await listen(
     { url: cfg.ntfy.url, topic: cfg.ntfy.commandTopic, ...(cfg.ntfy.token != null ? { token: cfg.ntfy.token } : {}) },

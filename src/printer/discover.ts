@@ -37,12 +37,22 @@ function txtToMap(data: unknown): Record<string, string> {
   for (const p of parts) {
     const s = Buffer.isBuffer(p) ? p.toString('utf8') : typeof p === 'string' ? p : ''
     const eq = s.indexOf('=')
-    if (eq > 0) out[s.slice(0, eq).toLowerCase()] = s.slice(eq + 1)
+    if (eq > 0) out[printable(s.slice(0, eq)).toLowerCase()] = printable(s.slice(eq + 1))
   }
   return out
 }
 
 const lc = (s: string) => s.toLowerCase().replace(/\.$/, '')
+
+// mDNS answers come from any device on the network and are not authenticated. Their values end up
+// in printer URIs, config/printer.env and the terminal, so keep only what a real printer would send.
+const HOSTNAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f]/g
+
+/** Text from TXT records (e.g. the printer name) with control characters (newlines, escapes) removed. */
+const printable = (s: string) => s.replace(CONTROL, ' ').trim()
 
 /** Turns raw mDNS answer/additional records into printers grouped by host. */
 export function collectPrinters(records: readonly MdnsRecord[]): FoundPrinter[] {
@@ -57,10 +67,11 @@ export function collectPrinters(records: readonly MdnsRecord[]): FoundPrinter[] 
       instances.set(lc(r.data), SERVICE_KIND[name])
     } else if (r.type === 'SRV' && r.data != null && typeof r.data === 'object') {
       const d = r.data as { target?: string; port?: number }
-      if (d.target != null && d.port != null) srv.set(name, { host: lc(d.target), port: d.port })
+      const host = d.target != null ? lc(d.target) : ''
+      if (HOSTNAME.test(host) && Number.isInteger(d.port) && d.port! > 0 && d.port! < 65536) srv.set(name, { host, port: d.port! })
     } else if (r.type === 'TXT') {
       txt.set(name, { ...txt.get(name), ...txtToMap(r.data) })
-    } else if (r.type === 'A' && typeof r.data === 'string') {
+    } else if (r.type === 'A' && typeof r.data === 'string' && IPV4.test(r.data)) {
       if (!addrs.has(name)) addrs.set(name, new Set())
       addrs.get(name)!.add(r.data)
     }
@@ -83,7 +94,7 @@ export function collectPrinters(records: readonly MdnsRecord[]): FoundPrinter[] 
 }
 
 function instanceLabel(instance: string): string {
-  return instance.split('._')[0] ?? instance
+  return printable(instance.split('._')[0] ?? instance)
 }
 
 /** Browses the local network for printers for `timeoutMs`. */

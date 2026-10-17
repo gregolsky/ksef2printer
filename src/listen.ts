@@ -48,14 +48,20 @@ export interface ListenDeps {
 
 const BACKOFF_MS = [5_000, 10_000, 30_000, 60_000]
 
+/** ntfy messages are at most 4 KB; a longer line is not from a well-behaved server. */
+const MAX_LINE_CHARS = 64 * 1024
+/** Spam on the topic must not turn into a reply per message (and use up the ntfy quota summaries need). */
+const UNKNOWN_REPLY_INTERVAL_MS = 60_000
+
 /** Parses ntfy's newline-delimited JSON stream; `onChunk` runs whenever data arrives (keepalives too). */
-async function* ndjson(body: ReadableStream<Uint8Array>, onChunk: () => void): AsyncGenerator<NtfyEvent> {
+export async function* ndjson(body: ReadableStream<Uint8Array>, onChunk: () => void): AsyncGenerator<NtfyEvent> {
   let buffer = ''
   for await (const chunk of body.pipeThrough(new TextDecoderStream())) {
     onChunk()
     buffer += chunk
     const lines = buffer.split('\n')
     buffer = lines.pop() ?? ''
+    if (buffer.length > MAX_LINE_CHARS) throw new Error(`ntfy sent a line over ${MAX_LINE_CHARS} characters`)
     for (const line of lines) {
       if (line.trim() === '') continue
       let event: NtfyEvent
@@ -81,6 +87,7 @@ export async function listen(opts: ListenOptions, deps: ListenDeps, signal?: Abo
   let lastId: string | undefined
   let running: string | null = null
   let failures = 0
+  let lastUnknownReply = -Infinity
   const stopped = () => signal?.aborted === true
 
   const handle = async (e: NtfyEvent): Promise<void> => {
@@ -96,7 +103,10 @@ export async function listen(opts: ListenOptions, deps: ListenDeps, signal?: Abo
     const command = parseCommand(text)
     if (command == null) {
       log.warn(`unknown command: ${JSON.stringify(text.slice(0, 80))}`)
-      await deps.reply('Unknown command', HELP)
+      if (deps.now() - lastUnknownReply >= UNKNOWN_REPLY_INTERVAL_MS) {
+        lastUnknownReply = deps.now()
+        await deps.reply('Unknown command', HELP)
+      }
       return
     }
     if (command.kind === 'help') {

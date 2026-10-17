@@ -66,6 +66,12 @@ function driverRank(m: DriverModel): number {
   return m.model.endsWith('/expert') ? 2 : 1
 }
 
+/** IPP resource path from the TXT `rp` key; anything that is not a plain path falls back to the default. */
+function resourcePath(svc: FoundService): string {
+  const rp = svc.txt['rp'] ?? ''
+  return /^[A-Za-z0-9._~-]+(\/[A-Za-z0-9._~-]+)*$/.test(rp) ? rp : 'ipp/print'
+}
+
 function addressOf(p: FoundPrinter): string {
   return p.addresses[0] ?? p.host
 }
@@ -77,9 +83,8 @@ export function suggestSettings(p: FoundPrinter, models: readonly DriverModel[])
 
   if (ipp != null && isDriverless(ipp)) {
     const scheme = ipp.service === 'ipps' ? 'ipps' : 'ipp'
-    const rp = ipp.txt['rp'] ?? 'ipp/print'
     return {
-      uri: `${scheme}://${addr}:${ipp.port}/${rp}`,
+      uri: `${scheme}://${addr}:${ipp.port}/${resourcePath(ipp)}`,
       model: 'everywhere',
       reason: 'driverless (IPP Everywhere / AirPrint), no driver needed',
     }
@@ -93,7 +98,7 @@ export function suggestSettings(p: FoundPrinter, models: readonly DriverModel[])
     return { uri, model: driver.model, reason: `needs a driver: ${driver.description}` }
   }
   return {
-    uri: ipp != null ? `ipp://${addr}:${ipp.port}/${ipp.txt['rp'] ?? 'ipp/print'}` : uri,
+    uri: ipp != null ? `ipp://${addr}:${ipp.port}/${resourcePath(ipp)}` : uri,
     model: 'everywhere',
     reason: `no installed driver matches "${make} ${model}"; trying driverless, which may not work. ` +
       'Add a driver with EXTRA_DRIVER_PACKAGES or a PPD in /config/printer.ppd',
@@ -102,6 +107,10 @@ export function suggestSettings(p: FoundPrinter, models: readonly DriverModel[])
 
 /** Renders settings as lines for an env file. */
 export function toEnv(p: FoundPrinter, s: PrinterSettings, options: string): string {
+  // Each value must stay on its own line: a newline would add variables to the env file.
+  for (const v of [p.name, p.host, s.uri, s.model, s.reason, options]) {
+    if (/[\u0000-\u001f\u007f]/.test(v)) throw new Error(`refusing to save a setting with control characters: ${JSON.stringify(v)}`)
+  }
   return [
     `# ${p.name} (${p.host}) — ${s.reason}`,
     `PRINTER_URI=${s.uri}`,

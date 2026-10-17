@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { listen, parseCommand, type Command, type ListenDeps } from '../src/listen.js'
+import { listen, ndjson, parseCommand, type Command, type ListenDeps } from '../src/listen.js'
 import { noopLogger } from '../src/logger.js'
 
 describe('parseCommand', () => {
@@ -120,5 +120,38 @@ describe('listen', () => {
     }
     await listen({ url: 'https://ntfy.example', topic: 't', stallMs: 50 }, deps, controller.signal)
     expect(urls).toHaveLength(2)
+  })
+
+  it('answers unknown commands at most once a minute', async () => {
+    const h = harness([[msg('m1', 'hello'), msg('m2', 'hi'), msg('m3', 'print please')]])
+    await h.run()
+    expect(h.replies).toEqual(['Unknown command'])
+  })
+})
+
+describe('ndjson', () => {
+  it('parses lines split across chunks and skips non-JSON', async () => {
+    const chunks = ['{"event":"op', 'en"}\nnot json\n{"event":"message","message":"x"}\n']
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        for (const ch of chunks) c.enqueue(new TextEncoder().encode(ch))
+        c.close()
+      },
+    })
+    const events = []
+    for await (const e of ndjson(body, () => {})) events.push(e)
+    expect(events).toEqual([{ event: 'open' }, { event: 'message', message: 'x' }])
+  })
+
+  it('stops on a line longer than any ntfy message', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('x'.repeat(70 * 1024)))
+        c.close()
+      },
+    })
+    await expect(async () => {
+      for await (const _ of ndjson(body, () => {})) void _
+    }).rejects.toThrow('line over')
   })
 })

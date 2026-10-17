@@ -104,6 +104,7 @@ KSeF requests are retried up to 4 times on network errors, 429 and 5xx, waiting 
 - One run at a time: a command during a run gets `Busy: … is running`. `data/run.lock` also stops a manual `./print.sh` run and a listener run from overlapping. A lock older than 6 h is treated as left over from a crash and taken over. Ctrl-C and `docker stop` release it.
 - Commands older than 10 minutes (by ntfy's timestamp) are ignored. After a disconnect, the listener reconnects with backoff (5 s up to 60 s) and resumes with `since=<last message id>`. It also reconnects if not even a keepalive arrives for 120 s.
 - While the listener runs, `print.sh` executes commands inside its container, because a second container would start a second CUPS on the same host port.
+- Limits: an `Unknown command` reply goes out at most once a minute, so spam can't use up the ntfy quota the summaries need. A stream line over 64 KB drops the connection, which then reconnects. At startup the listener warns if the topic is shorter than 20 characters and has no token, or if `NTFY_URL` is plain `http://` outside the local network.
 - Security rests on the topic: on public ntfy.sh anyone who knows it can read the lists and start printing. Use a long random topic, or `NTFY_TOKEN` with a protected topic or your own server.
 
 ## Logs

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { collectPrinters, type MdnsRecord } from '../src/printer/discover.js'
+import { suggestSettings as suggest, toEnv } from '../src/printer/suggest.js'
 import { findDriver, parseModels, suggestSettings } from '../src/printer/suggest.js'
 
 const txt = (...kv: string[]) => kv.map((s) => Buffer.from(s))
@@ -81,5 +82,47 @@ describe('findDriver', () => {
   })
   it('does not match another make', () => {
     expect(findDriver('Canon', 'HL-1210W', models)).toBeNull()
+  })
+})
+
+describe('untrusted mDNS announcements', () => {
+  // Any device on the network can announce this; before the fix the newline added NODE_OPTIONS to printer.env.
+  const hostile: MdnsRecord[] = [
+    { name: '_ipp._tcp.local', type: 'PTR', data: 'Office Printer._ipp._tcp.local' },
+    { name: 'Office Printer._ipp._tcp.local', type: 'SRV', data: { target: 'office.local', port: 631 } },
+    {
+      name: 'Office Printer._ipp._tcp.local',
+      type: 'TXT',
+      data: [
+        Buffer.from('ty=Brother\nKSEF_ENV=test'),
+        Buffer.from('pdl=image/urf'),
+        Buffer.from('rp=ipp/print\nNODE_OPTIONS=--import=data:text/javascript,process.exit(9)'),
+      ],
+    },
+    { name: 'office.local', type: 'A', data: '192.168.1.66' },
+  ]
+
+  it('cannot add variables to the saved env file', () => {
+    const [p] = collectPrinters(hostile)
+    const env = toEnv(p!, suggest(p!, []), 'media=A4')
+    const vars = env.split('\n').filter((l) => /^[A-Z_]+=/.test(l)).map((l) => l.split('=')[0])
+    expect(vars).toEqual(['PRINTER_URI', 'PRINTER_MODEL', 'PRINTER_OPTIONS'])
+    expect(env).toContain('PRINTER_URI=ipp://192.168.1.66:631/ipp/print\n')
+    expect(env).not.toContain('NODE_OPTIONS')
+  })
+
+  it('drops services whose host or address is not a plain name or IPv4 address', () => {
+    const bad: MdnsRecord[] = [
+      { name: '_ipp._tcp.local', type: 'PTR', data: 'X._ipp._tcp.local' },
+      { name: 'X._ipp._tcp.local', type: 'SRV', data: { target: 'evil\n.local', port: 631 } },
+    ]
+    expect(collectPrinters(bad)).toEqual([])
+    const [p] = collectPrinters([...hostile.slice(0, 3), { name: 'office.local', type: 'A', data: '1.2.3.4\nX=1' }])
+    expect(p!.addresses).toEqual([])
+  })
+
+  it('refuses to write a value containing a newline', () => {
+    const [p] = collectPrinters(hostile)
+    expect(() => toEnv(p!, { uri: 'socket://x\nA=1', model: 'everywhere', reason: '' }, 'media=A4')).toThrow('control characters')
   })
 })

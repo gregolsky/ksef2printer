@@ -84,3 +84,32 @@ export function loadRunConfig(env: NodeJS.ProcessEnv = process.env): RunConfig {
   }
   return cfg
 }
+
+/** Shorter topics can be guessed; on public ntfy.sh the topic name is the only protection. */
+const MIN_TOPIC_LENGTH = 20
+
+/**
+ * Weaknesses in the ntfy setup worth telling the user about. Without a token, anyone who knows the
+ * topic can read the invoice lists and, with the listener running, start printing.
+ */
+export function ntfyWarnings(ntfy: NonNullable<RunConfig['ntfy']>): string[] {
+  const warnings: string[] = []
+  const url = new URL(ntfy.url)
+  const local = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$)/.test(url.hostname)
+  if (url.protocol !== 'https:' && !local) {
+    warnings.push(`NTFY_URL uses ${url.protocol}//: invoice lists and commands cross the internet unencrypted`)
+  }
+  if (ntfy.token == null) {
+    const topics = [['NTFY_TOPIC', ntfy.topic]]
+    if (ntfy.commandTopic !== ntfy.topic) topics.push(['NTFY_COMMAND_TOPIC', ntfy.commandTopic])
+    for (const [name, topic] of topics as Array<[string, string]>) {
+      if (topic.length < MIN_TOPIC_LENGTH) {
+        warnings.push(
+          `${name} is only ${topic.length} characters: anyone who guesses it can read your invoice lists and start printing. ` +
+            'Use a random one, e.g. `openssl rand -hex 16`',
+        )
+      }
+    }
+  }
+  return warnings
+}
