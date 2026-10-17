@@ -14,7 +14,7 @@ import { CupsPrinter, PrintError } from './printer/cups.js'
 import { assertReachable } from './printer/reachable.js'
 import { browsePrinters, type FoundPrinter } from './printer/discover.js'
 import { parseModels, suggestSettings, toEnv, type PrinterSettings } from './printer/suggest.js'
-import { runMonth } from './run.js'
+import { runMonth, type RunDeps, type RunOptions } from './run.js'
 
 const USAGE = `Usage:
   ksef2printer YYYY-MM [--limit N] [--dry-run]
@@ -172,42 +172,41 @@ async function printMonth(args: readonly string[]): Promise<number> {
   return executeMonth(month, { dryRun, ...(limit != null ? { limit } : {}) })
 }
 
+function logToDailyFile(dataDir: string): void {
+  logToFile(join(dataDir, 'logs', `${new Date().toISOString().slice(0, 10)}.log`))
+}
+
 /** One month run, shared by the CLI and ntfy commands: lock, log file, run, summary or "stopped" alert. */
 async function executeMonth(month: Month, { dryRun, limit }: { dryRun: boolean; limit?: number }): Promise<number> {
   const cfg = loadRunConfig()
   const printerCfg = loadPrinterConfig()
   const what = `${formatMonth(month)}${dryRun ? ' --dry-run' : ''}${limit != null ? ` --limit ${limit}` : ''}`
-  logToFile(join(cfg.dataDir, 'logs', `${new Date().toISOString().slice(0, 10)}.log`))
+  logToDailyFile(cfg.dataDir)
   log.info(`run ${what}`)
   const notifier = cfg.ntfy != null ? ntfyNotifier(cfg.ntfy, log) : noopNotifier
+  const options: RunOptions = {
+    month,
+    env: cfg.ksef.env,
+    dataDir: cfg.dataDir,
+    ...(limit != null ? { limit } : {}),
+    dryRun,
+    printTimeoutMs: printerCfg.timeoutMs,
+    retryDelaysMs: cfg.retryDelaysMs,
+  }
+  const deps: RunDeps = {
+    ksef: new KsefClient({ ...cfg.ksef, logger: log }),
+    render: (xml, ksefNumber, qr) => renderInvoicePdf(cfg.pdfRenderer, xml, ksefNumber, qr),
+    printer: cupsPrinter(printerCfg),
+    checkPrinter: () => assertReachable(printerCfg.uri),
+    notifier,
+    logger: log,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    now: () => new Date(),
+  }
   try {
-    const summary = await withRunLock(
-      cfg.dataDir,
-      what,
-      () =>
-        runMonth(
-          {
-            month,
-            env: cfg.ksef.env,
-            dataDir: cfg.dataDir,
-            ...(limit != null ? { limit } : {}),
-            dryRun,
-            printTimeoutMs: printerCfg.timeoutMs,
-            retryDelaysMs: cfg.retryDelaysMs,
-          },
-          {
-            ksef: new KsefClient({ ...cfg.ksef, logger: log }),
-            render: (xml, ksefNumber, qr) => renderInvoicePdf(cfg.pdfRenderer, xml, ksefNumber, qr),
-            printer: cupsPrinter(printerCfg),
-            checkPrinter: () => assertReachable(printerCfg.uri),
-            notifier,
-            logger: log,
-            sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-            now: () => new Date(),
-          },
-        ),
-      { onStale: (held) => log.warn(`taking over a stale run lock: ${held}`) },
-    )
+    const summary = await withRunLock(cfg.dataDir, what, () => runMonth(options, deps), {
+      onStale: (held) => log.warn(`taking over a stale run lock: ${held}`),
+    })
     return summary.failed > 0 ? EXIT_FAILED : EXIT_OK
   } catch (err) {
     // KSeF unreachable, authentication rejected, another run in progress…: the run stopped part way.
@@ -225,7 +224,7 @@ async function listenForCommands(): Promise<number> {
     log.error('listen needs NTFY_URL and NTFY_TOPIC in .env')
     return EXIT_CONFIG
   }
-  logToFile(join(cfg.dataDir, 'logs', `${new Date().toISOString().slice(0, 10)}.log`))
+  logToDailyFile(cfg.dataDir)
   const notifier = ntfyNotifier(cfg.ntfy, log)
   await listen(
     { url: cfg.ntfy.url, topic: cfg.ntfy.commandTopic, ...(cfg.ntfy.token != null ? { token: cfg.ntfy.token } : {}) },

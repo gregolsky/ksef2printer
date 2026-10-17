@@ -16,7 +16,7 @@ export function parseCommand(text: string): Command | null {
   return month != null ? { kind: m[1] as 'print' | 'dry-run', month } : null
 }
 
-export const describe = (c: Command) => (c.kind === 'help' ? 'help' : `${c.kind} ${formatMonth(c.month)}`)
+export const commandText = (c: Command) => (c.kind === 'help' ? 'help' : `${c.kind} ${formatMonth(c.month)}`)
 
 interface NtfyEvent {
   id?: string
@@ -47,6 +47,27 @@ export interface ListenDeps {
 }
 
 const BACKOFF_MS = [5_000, 10_000, 30_000, 60_000]
+
+/** Parses ntfy's newline-delimited JSON stream; `onChunk` runs whenever data arrives (keepalives too). */
+async function* ndjson(body: ReadableStream<Uint8Array>, onChunk: () => void): AsyncGenerator<NtfyEvent> {
+  let buffer = ''
+  for await (const chunk of body.pipeThrough(new TextDecoderStream())) {
+    onChunk()
+    buffer += chunk
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (line.trim() === '') continue
+      let event: NtfyEvent
+      try {
+        event = JSON.parse(line) as NtfyEvent
+      } catch {
+        continue
+      }
+      yield event
+    }
+  }
+}
 
 /**
  * Subscribes to the ntfy topic and runs commands sent to it, one at a time. Reconnects forever
@@ -83,15 +104,15 @@ export async function listen(opts: ListenOptions, deps: ListenDeps, signal?: Abo
       return
     }
     if (running != null) {
-      await deps.reply(`Busy: ${running} is running`, `Not started: ${describe(command)}. Send it again when the current run finishes.`)
+      await deps.reply(`Busy: ${running} is running`, `Not started: ${commandText(command)}. Send it again when the current run finishes.`)
       return
     }
-    running = describe(command)
+    running = commandText(command)
     log.info(`command: ${running}`)
     await deps.reply(`▶ ${running} started`, command.kind === 'dry-run' ? 'Listing invoices, nothing will print.' : 'Printing; a summary follows.')
     void deps
       .execute(command)
-      .catch((err: unknown) => log.error(`${describe(command)} failed: ${err instanceof Error ? err.message : String(err)}`))
+      .catch((err: unknown) => log.error(`${commandText(command)} failed: ${err instanceof Error ? err.message : String(err)}`))
       .finally(() => {
         running = null
       })
@@ -112,30 +133,12 @@ export async function listen(opts: ListenOptions, deps: ListenDeps, signal?: Abo
       resetStall()
       const res = await deps.fetch(lastId != null ? `${base}?since=${encodeURIComponent(lastId)}` : base, { headers, signal: conn.signal })
       if (!res.ok || res.body == null) throw new Error(`ntfy returned ${res.status}`)
-      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
-      let buffer = ''
-      for (;;) {
-        const { value, done } = await reader.read()
-        if (done) break
-        resetStall()
-        buffer += value
-        let nl: number
-        while ((nl = buffer.indexOf('\n')) >= 0) {
-          const line = buffer.slice(0, nl).trim()
-          buffer = buffer.slice(nl + 1)
-          if (line === '') continue
-          let event: NtfyEvent
-          try {
-            event = JSON.parse(line) as NtfyEvent
-          } catch {
-            continue
-          }
-          if (event.event === 'open') {
-            failures = 0
-            log.info(`listening for commands on ntfy topic ${opts.topic.slice(0, 4)}…`)
-          }
-          await handle(event)
+      for await (const event of ndjson(res.body, resetStall)) {
+        if (event.event === 'open') {
+          failures = 0
+          log.info(`listening for commands on ntfy topic ${opts.topic.slice(0, 4)}…`)
         }
+        await handle(event)
       }
       log.warn('ntfy connection closed')
     } catch (err) {

@@ -166,9 +166,11 @@ export async function runMonth(opts: RunOptions, deps: RunDeps): Promise<RunSumm
   // Marks before this run; the print loop replaces them with PRINTED / FAILED.
   const marks = new Map<Doc, Mark>()
   const reasons = new Map<Doc, string>()
-  for (const d of docs) {
-    marks.set(d, state[d.meta.ksefNumber]?.status === 'printed' ? 'printed' : selected.includes(d) ? 'WILL PRINT' : 'later')
+  const initialMark = (d: Doc): Mark => {
+    if (state[d.meta.ksefNumber]?.status === 'printed') return 'printed'
+    return selected.includes(d) ? 'WILL PRINT' : 'later'
   }
+  for (const d of docs) marks.set(d, initialMark(d))
 
   if (opts.dryRun) {
     summary.lines = docs.map((d) => invoiceLine(d, marks.get(d)!))
@@ -260,6 +262,12 @@ export async function runMonth(opts: RunOptions, deps: RunDeps): Promise<RunSumm
   return summary
 }
 
+function summaryStyle(dryRun: boolean, failed: number): NotifyOptions {
+  if (dryRun) return { tags: ['mag'] }
+  if (failed > 0) return { priority: 'high', tags: ['warning'] }
+  return { tags: ['white_check_mark'] }
+}
+
 /** Logs the counts and sends one notification listing every invoice of the month. */
 async function notifySummary(
   key: string,
@@ -274,10 +282,5 @@ async function notifySummary(
   deps.logger.info(counts)
   const header = dryRun ? ['Dry run: nothing was printed.', counts] : [counts]
   const body = summary.lines.length > 0 ? [...header, '', ...summary.lines] : [...header, 'No invoices in KSeF for this month.']
-  const opts: NotifyOptions = dryRun
-    ? { tags: ['mag'] }
-    : summary.failed > 0
-      ? { priority: 'high', tags: ['warning'] }
-      : { tags: ['white_check_mark'] }
-  await sendLong(deps.notifier, `ksef2printer ${key}${dryRun ? ' — DRY RUN' : ''}`, body, opts)
+  await sendLong(deps.notifier, `ksef2printer ${key}${dryRun ? ' — DRY RUN' : ''}`, body, summaryStyle(dryRun, summary.failed))
 }
