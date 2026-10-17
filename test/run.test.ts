@@ -218,9 +218,11 @@ describe('runMonth', () => {
   it('stops before printing anything when the printer is unreachable', async () => {
     const f = fake({ Subject1: [meta(1, '2026-10-02')] })
     f.printerUp = false
-    await expect(runMonth(opts, f.deps)).rejects.toThrow('printer not reachable')
+    const summary = await runMonth(opts, f.deps)
+    expect(summary.stopped).toContain('printer not reachable')
     expect(f.downloads).toEqual([])
     expect(f.submitted).toEqual([])
+    expect(f.notes).toEqual(['✗ ksef2printer 2026-10 stopped'])
   })
 
   it('does not check the printer when there is nothing to print', async () => {
@@ -235,7 +237,7 @@ describe('runMonth', () => {
     f.deps.printer.cancel = async () => {
       f.printerUp = false
     }
-    await expect(runMonth(opts, f.deps)).rejects.toThrow('printer not reachable')
+    expect((await runMonth(opts, f.deps)).stopped).toContain('printer not reachable')
     expect(f.submitted).toHaveLength(1)
     const state = JSON.parse(await readFile(join(dataDir, 'state', '2026-10.json'), 'utf8'))
     expect(state['1111111111-20261015-1']).toMatchObject({ status: 'failed', attempts: 1 })
@@ -244,8 +246,20 @@ describe('runMonth', () => {
   it('stops the run when every attempt times out, instead of waiting on each invoice', async () => {
     const f = fake({ Subject1: [meta(1, '2026-10-02'), meta(2, '2026-10-03')] })
     f.outcomes.push('timeout', 'timeout', 'timeout')
-    await expect(runMonth(opts, f.deps)).rejects.toThrow('printer stopped responding')
+    expect((await runMonth(opts, f.deps)).stopped).toContain('printer stopped responding')
     expect(f.submitted).toHaveLength(3)
+  })
+
+  it('lists what printed and what did not when printing stops part way', async () => {
+    const f = fake({ Subject1: [meta(1, '2026-10-02'), meta(2, '2026-10-03'), meta(3, '2026-10-04')] })
+    f.outcomes.push('completed', 'timeout', 'timeout', 'timeout')
+    const summary = await runMonth(opts, f.deps)
+    expect(summary).toMatchObject({ printed: 1, failed: 0 })
+    expect(f.notes).toEqual(['✗ ksef2printer 2026-10 stopped'])
+    const body = f.bodies[0]!.split('\n')
+    expect(body[0]).toBe('Stopped: printer stopped responding: SPRZEDAŻ FV/2 (Buyer 2) timed out on all 3 attempts')
+    expect(body[2]).toBe('2026-10: 1 printed, 0 failed, 2 not printed yet, 0 already printed')
+    expect(body.slice(4).map((l) => l.slice(0, 12))).toEqual(['[PRINTED   ]', '[NOT YET   ]', '[NOT YET   ]'])
   })
 
   it('does not print when the PDF cannot be produced', async () => {

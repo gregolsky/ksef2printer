@@ -203,7 +203,7 @@ async function executeMonth(month: Month, { dryRun, limit }: { dryRun: boolean; 
     const summary = await withRunLock(cfg.dataDir, what, () => runMonth(options, deps), {
       onStale: (held) => log.warn(`taking over a stale run lock: ${held}`),
     })
-    return summary.failed > 0 ? EXIT_FAILED : EXIT_OK
+    return summary.failed > 0 || summary.stopped != null ? EXIT_FAILED : EXIT_OK
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
     log.error(error)
@@ -281,11 +281,12 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
+// A held run lock is released however the process ends, a crash included.
+process.on('exit', releaseLocksSync)
 // Node runs as PID 1 in the container, where signals have no default handler: without these,
-// Ctrl-C and `docker stop` would be ignored. A held run lock is released before exiting.
+// Ctrl-C and `docker stop` would be ignored.
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]] as const) {
   process.on(signal, () => {
-    releaseLocksSync()
     log.warn(`${signal}: stopping`)
     process.exit(code)
   })
