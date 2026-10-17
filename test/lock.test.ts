@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { exists, withRunLock } from '../src/fs.js'
+import { exists, readRunLock, RunLockedError, withRunLock } from '../src/fs.js'
 
 let dir: string
 beforeEach(async () => {
@@ -24,7 +24,19 @@ describe('withRunLock', () => {
     await withRunLock(dir, '2026-10', async () => {
       inner = withRunLock(dir, '2026-09 --dry-run', async () => 'ran')
       await expect(inner).rejects.toThrow('another run is in progress: 2026-10 since')
+      await expect(inner).rejects.toBeInstanceOf(RunLockedError)
     })
+  })
+
+  it('reports a fresh lock as held, and a missing, damaged or stale one as not', async () => {
+    const now = () => Date.parse('2026-10-17T10:00:00Z')
+    expect(await readRunLock(dir, now)).toBeNull()
+    await writeFile(join(dir, 'run.lock'), JSON.stringify({ what: '2026-09', since: '2026-10-17T09:58:00.000Z' }))
+    expect(await readRunLock(dir, now)).toEqual({ what: '2026-09', since: '2026-10-17T09:58:00.000Z' })
+    await writeFile(join(dir, 'run.lock'), JSON.stringify({ what: 'old', since: '2026-10-17T03:00:00Z' }))
+    expect(await readRunLock(dir, now)).toBeNull()
+    await writeFile(join(dir, 'run.lock'), 'not json')
+    expect(await readRunLock(dir, now)).toBeNull()
   })
 
   it('takes over a lock left by a crash', async () => {

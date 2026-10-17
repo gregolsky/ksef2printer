@@ -1,5 +1,5 @@
 import { appendFileSync, mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { join } from 'node:path'
 
 export interface Logger {
   info(msg: string): void
@@ -8,22 +8,27 @@ export interface Logger {
   debug(msg: string): void
 }
 
-let logFile: string | null = null
+let logDir: string | null = null
 
-/** Also appends every log line to `file` (the container is removed after each run, taking its output with it). */
-export function logToFile(file: string): void {
-  mkdirSync(dirname(file), { recursive: true })
-  logFile = file
+/**
+ * Also appends every log line to `<dir>/YYYY-MM-DD.log`, picked by the line's own (UTC) date, so a
+ * listener running for weeks still writes each day to its own file. The container is removed after
+ * each one-off run, taking its output with it.
+ */
+export function logToDailyFiles(dir: string): void {
+  mkdirSync(dir, { recursive: true })
+  logDir = dir
 }
 
 function write(print: (line: string) => void, level: string, msg: string): void {
-  const line = `[${new Date().toISOString()}] ${level} ${msg}`
+  const time = new Date().toISOString()
+  const line = `[${time}] ${level} ${msg}`
   print(line)
-  if (logFile == null) return
+  if (logDir == null) return
   try {
-    appendFileSync(logFile, line + '\n')
+    appendFileSync(join(logDir, `${time.slice(0, 10)}.log`), line + '\n')
   } catch (err) {
-    logFile = null
+    logDir = null
     console.warn(`log file disabled: ${err instanceof Error ? err.message : String(err)}`)
   }
 }

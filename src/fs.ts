@@ -30,9 +30,31 @@ export function releaseLocksSync(): void {
   heldLocks.clear()
 }
 
+export class RunLockedError extends Error {}
+
+export interface HeldLock {
+  what: string
+  since: string
+}
+
+/** A lock that is missing, unreadable or older than `STALE_LOCK_MS` doesn't count as held. */
+export async function readRunLock(dataDir: string, now: () => number = Date.now): Promise<HeldLock | null> {
+  const raw = await readFile(join(dataDir, 'run.lock'), 'utf8').catch(() => null)
+  if (raw == null) return null
+  let held: { what?: unknown; since?: unknown } = {}
+  try {
+    held = JSON.parse(raw) as typeof held
+  } catch {
+    return null
+  }
+  const since = typeof held.since === 'string' ? Date.parse(held.since) : NaN
+  if (!Number.isFinite(since) || now() - since >= STALE_LOCK_MS) return null
+  return { what: typeof held.what === 'string' ? held.what : 'unknown', since: held.since as string }
+}
+
 /**
  * Runs `fn` while holding `<dataDir>/run.lock`, so a manual run and a run started over ntfy never
- * print the same month at once. Throws if another run holds a fresh lock.
+ * print the same month at once. Throws `RunLockedError` if another run holds a fresh lock.
  */
 export async function withRunLock<T>(
   dataDir: string,
@@ -48,18 +70,9 @@ export async function withRunLock<T>(
     await writeFile(file, content, { flag: 'wx' })
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-    const raw = await readFile(file, 'utf8').catch(() => '')
-    let held: { what?: string; since?: string } = {}
-    try {
-      held = JSON.parse(raw) as typeof held
-    } catch {
-      // unreadable lock: treat as stale
-    }
-    const since = Date.parse(held.since ?? '')
-    if (Number.isFinite(since) && now() - since < STALE_LOCK_MS) {
-      throw new Error(`another run is in progress: ${held.what ?? 'unknown'} since ${held.since}`)
-    }
-    opts.onStale?.(raw.trim())
+    const held = await readRunLock(dataDir, now)
+    if (held != null) throw new RunLockedError(`another run is in progress: ${held.what} since ${held.since}`)
+    opts.onStale?.((await readFile(file, 'utf8').catch(() => '')).trim())
     await writeFile(file, content)
   }
   heldLocks.add(file)

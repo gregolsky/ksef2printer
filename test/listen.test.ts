@@ -22,7 +22,7 @@ const sec = (ms: number) => Math.floor(ms / 1000)
 type Event = Record<string, unknown>
 
 /** A fake ntfy: each connection streams the next batch of events, then closes. */
-function harness(batches: Event[][], opts: { executeMs?: Promise<void> } = {}) {
+function harness(batches: Event[][], opts: { executeMs?: Promise<void>; otherRun?: string } = {}) {
   const urls: string[] = []
   const replies: string[] = []
   const executed: string[] = []
@@ -43,6 +43,7 @@ function harness(batches: Event[][], opts: { executeMs?: Promise<void> } = {}) {
     sleep: async () => {},
     logger: noopLogger,
     reply: async (title) => void replies.push(title),
+    otherRun: async () => opts.otherRun ?? null,
     execute: async (c: Extract<Command, { kind: 'print' | 'dry-run' }>) => {
       executed.push(`${c.kind} ${c.month.year}-${c.month.month}`)
       await opts.executeMs
@@ -85,6 +86,13 @@ describe('listen', () => {
     expect(h.replies).toEqual(['▶ print 2026-10 started', 'Busy: print 2026-10 is running'])
   })
 
+  it('answers busy while a run started outside the listener holds the lock', async () => {
+    const h = harness([[msg('m1', 'print 2026-10')]], { otherRun: '2026-09 (since 09:58 UTC)' })
+    await h.run()
+    expect(h.executed).toEqual([])
+    expect(h.replies).toEqual(['Busy: 2026-09 (since 09:58 UTC) is running'])
+  })
+
   it('reconnects after the stream ends, resuming after the last message', async () => {
     const h = harness([[msg('m1', 'help')], [msg('m2', 'dry-run 2026-09')]])
     await h.run()
@@ -116,6 +124,7 @@ describe('listen', () => {
       sleep: async () => {},
       logger: noopLogger,
       reply: async () => {},
+      otherRun: async () => null,
       execute: async () => {},
     }
     await listen({ url: 'https://ntfy.example', topic: 't', stallMs: 50 }, deps, controller.signal)

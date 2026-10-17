@@ -42,6 +42,8 @@ export interface ListenDeps {
   sleep(ms: number): Promise<void>
   logger: Logger
   reply(title: string, message: string, opts?: NotifyOptions): Promise<void>
+  /** Describes a run started outside the listener (e.g. `./print.sh`) that is still going, or null. */
+  otherRun(): Promise<string | null>
   /** Runs a print or dry-run command to completion; the listener keeps reading meanwhile. */
   execute(command: Extract<Command, { kind: 'print' | 'dry-run' }>): Promise<void>
 }
@@ -113,8 +115,9 @@ export async function listen(opts: ListenOptions, deps: ListenDeps, signal?: Abo
       await deps.reply('ksef2printer', HELP)
       return
     }
-    if (running != null) {
-      await deps.reply(`Busy: ${running} is running`, `Not started: ${commandText(command)}. Send it again when the current run finishes.`)
+    const busy = running ?? (await deps.otherRun())
+    if (busy != null) {
+      await deps.reply(`Busy: ${busy} is running`, `Not started: ${commandText(command)}. Send it again when the current run finishes.`)
       return
     }
     running = commandText(command)

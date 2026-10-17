@@ -6,8 +6,8 @@ import { run } from './exec.js'
 import { KsefClient } from './ksef/client.js'
 import { formatMonth, parseMonth, type Month } from './ksef/time.js'
 import { listen } from './listen.js'
-import { releaseLocksSync, withRunLock } from './fs.js'
-import { consoleLogger as log, logToFile } from './logger.js'
+import { readRunLock, releaseLocksSync, RunLockedError, withRunLock } from './fs.js'
+import { consoleLogger as log, logToDailyFiles } from './logger.js'
 import { noopNotifier, ntfyNotifier } from './notify.js'
 import { renderInvoicePdf } from './pdf/render.js'
 import { CupsPrinter, PrintError } from './printer/cups.js'
@@ -172,16 +172,12 @@ async function printMonth(args: readonly string[]): Promise<number> {
   return executeMonth(month, { dryRun, ...(limit != null ? { limit } : {}) })
 }
 
-function logToDailyFile(dataDir: string): void {
-  logToFile(join(dataDir, 'logs', `${new Date().toISOString().slice(0, 10)}.log`))
-}
-
 /** One month run, shared by the CLI and ntfy commands: lock, log file, run, summary or "stopped" alert. */
 async function executeMonth(month: Month, { dryRun, limit }: { dryRun: boolean; limit?: number }): Promise<number> {
   const cfg = loadRunConfig()
   const printerCfg = loadPrinterConfig()
   const what = `${formatMonth(month)}${dryRun ? ' --dry-run' : ''}${limit != null ? ` --limit ${limit}` : ''}`
-  logToDailyFile(cfg.dataDir)
+  logToDailyFiles(join(cfg.dataDir, 'logs'))
   log.info(`run ${what}`)
   const notifier = cfg.ntfy != null ? ntfyNotifier(cfg.ntfy, log) : noopNotifier
   const options: RunOptions = {
@@ -209,9 +205,11 @@ async function executeMonth(month: Month, { dryRun, limit }: { dryRun: boolean; 
     })
     return summary.failed > 0 ? EXIT_FAILED : EXIT_OK
   } catch (err) {
-    // KSeF unreachable, authentication rejected, another run in progress…: the run stopped part way.
     const error = err instanceof Error ? err.message : String(err)
     log.error(error)
+    // Nothing ran, so there is nothing to alert about; the caller sees the error.
+    if (err instanceof RunLockedError) return EXIT_FAILED
+    // KSeF unreachable, authentication rejected…: the run stopped part way.
     await notifier.send(`✗ ksef2printer ${what} stopped`, error, { priority: 'high', tags: ['x'] })
     return EXIT_FAILED
   }
@@ -224,7 +222,7 @@ async function listenForCommands(): Promise<number> {
     log.error('listen needs NTFY_TOPIC in .env')
     return EXIT_CONFIG
   }
-  logToDailyFile(cfg.dataDir)
+  logToDailyFiles(join(cfg.dataDir, 'logs'))
   for (const w of ntfyWarnings(cfg.ntfy)) log.warn(w)
   const notifier = ntfyNotifier(cfg.ntfy, log)
   await listen(
@@ -235,6 +233,10 @@ async function listenForCommands(): Promise<number> {
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
       logger: log,
       reply: (title, message, opts) => notifier.send(title, message, opts),
+      otherRun: async () => {
+        const held = await readRunLock(cfg.dataDir)
+        return held != null ? `${held.what} (since ${held.since.slice(11, 16)} UTC)` : null
+      },
       execute: async (command) => {
         await executeMonth(command.month, { dryRun: command.kind === 'dry-run' })
       },
